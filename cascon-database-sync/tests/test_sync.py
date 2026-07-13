@@ -7,7 +7,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from cascon_sync.database import load_database
+from cascon_sync.database import load_database, parse_designators
 from cascon_sync.matcher import (
     discover_project_dirs,
     match_all_sources,
@@ -45,8 +45,8 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(database.project_names, ["ProjectA", "ProjectB"])
         self.assertEqual(database.records[0].part_number, "C12345-001")
         self.assertEqual(database.records[0].model, "STM32F103C8T6")
-        self.assertEqual(database.records[0].designator_in("ProjectA"), "U1")
-        self.assertEqual(database.records[0].designator_in("ProjectB"), "U5")
+        self.assertEqual(database.records[0].designators_in("ProjectA"), ["U1"])
+        self.assertEqual(database.records[0].designators_in("ProjectB"), ["U5"])
         self.assertEqual(database.records[0].target_name, "[STM32F103C8T6 C12345-001]")
 
     def test_parse_bracket_name(self) -> None:
@@ -124,6 +124,28 @@ class CasconSyncTests(unittest.TestCase):
         matched, unmatched, _ = match_all_sources([workspace], database)
         self.assertEqual(len(matched), 0)
         self.assertEqual(len(unmatched), 1)
+
+    def test_parse_multiline_designators(self) -> None:
+        self.assertEqual(parse_designators("U1\nU2\nU3"), ["U1", "U2", "U3"])
+        self.assertEqual(parse_designators("U1,U2;U3"), ["U1", "U2", "U3"])
+        self.assertEqual(parse_designators("U1\nU1"), ["U1"])
+
+    def test_match_multiline_designators_in_cell(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-003", "W25Q128JVSIQ", "U3\nU4\nU5"])
+        xlsx = self.temp_dir / "multiline.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        self.assertEqual(database.records[0].designators_in("ProjectA"), ["U3", "U4", "U5"])
+
+        for folder in ("[U3]", "[U4]", "[U5]", "[W25Q128JVSIQ U4]"):
+            result = match_folder_in_project(folder, "ProjectA", database.records)
+            self.assertIsNotNone(result, folder)
+            record, _, _ = result  # type: ignore[misc]
+            self.assertEqual(record.part_number, "C12345-003")
 
     def test_match_project_folders(self) -> None:
         database = self._load_db()

@@ -83,6 +83,7 @@ def match_folder_in_project(
 
   约束：
   - 仅在 database 该项目列有位号的记录中查找
+  - 项目列单元格内换行填写多个位号时，逐一参与匹配
   - 所有比对前会去掉文件夹名外层 `[]` 并忽略大小写、空格、`_`、`-` 差异
     """
     parsed = parse_chip_folder_name(folder_name)
@@ -95,17 +96,21 @@ def match_folder_in_project(
     candidates: list[tuple[ChipRecord, str, int]] = []
 
     for record in records:
-        designator = record.designator_in(project_name)
-        if not designator:
+        designators = record.designators_in(project_name)
+        if not designators:
             continue
 
-        for variant, match_type in _build_variants(record.model, designator):
-            if _normalize_text(variant) == parsed_norm:
-                candidates.append((record, match_type, _PRIORITY[match_type]))
-                break
-            elif len(parsed_tokens) >= 2 and _tokenize(variant) == parsed_tokens:
-                candidates.append((record, "token_set", _PRIORITY["token_set"]))
-                break
+        for designator in designators:
+            for variant, match_type in _build_variants(record.model, designator):
+                if _normalize_text(variant) == parsed_norm:
+                    candidates.append((record, match_type, _PRIORITY[match_type]))
+                    break
+                elif len(parsed_tokens) >= 2 and _tokenize(variant) == parsed_tokens:
+                    candidates.append((record, "token_set", _PRIORITY["token_set"]))
+                    break
+            else:
+                continue
+            break
 
     if not candidates:
         return None

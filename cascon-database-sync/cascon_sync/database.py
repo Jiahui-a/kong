@@ -20,12 +20,16 @@ class ChipRecord:
 
     part_number: str
     model: str
-    designators_by_project: dict[str, str]
+    designators_by_project: dict[str, list[str]]
     row_index: int
 
+    def designators_in(self, project_name: str) -> list[str]:
+        """获取该料号在指定项目中的位号列表（支持单元格内换行）。"""
+        return list(self.designators_by_project.get(project_name, []))
+
     def designator_in(self, project_name: str) -> str:
-        """获取该料号在指定项目中的位号。"""
-        return self.designators_by_project.get(project_name, "")
+        """获取位号的文本表示（多位号以换行连接）。"""
+        return "\n".join(self.designators_in(project_name))
 
     @property
     def target_name(self) -> str:
@@ -50,6 +54,35 @@ def _cell_text(value: object) -> str:
     return str(value).strip()
 
 
+def parse_designators(value: object) -> list[str]:
+    """解析项目列中的位号，支持单元格内换行及常见分隔符。
+
+    例如 Excel 单元格内容为::
+        U1
+        U2
+        U3
+
+    将解析为 [\"U1\", \"U2\", \"U3\"]。
+    """
+    text = _cell_text(value)
+    if not text:
+        return []
+
+    parts = re.split(r"[\r\n,;，、]+", text)
+    designators: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        designator = part.strip()
+        if not designator:
+            continue
+        key = designator.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        designators.append(designator)
+    return designators
+
+
 def normalize_project_name(name: str) -> str:
     """项目名规范化，用于文件夹名与表头匹配。"""
     return re.sub(r"\s+", "", name).casefold()
@@ -72,6 +105,7 @@ def load_database(xlsx_path: Path) -> Database:
   - 第 2 列：料号
   - 第 3 列：型号
   - 第 4 列起：项目名（表头），单元格值为该料号在该项目中的位号
+    同一单元格内多位号可用换行、逗号、分号等分隔
     """
     if not xlsx_path.is_file():
         raise FileNotFoundError(f"找不到 database 文件: {xlsx_path}")
@@ -119,11 +153,11 @@ def load_database(xlsx_path: Path) -> Database:
                 f"料号={part_number!r}, 型号={model!r}"
             )
 
-        designators_by_project: dict[str, str] = {}
+        designators_by_project: dict[str, list[str]] = {}
         for project, col_index in zip(project_names, range(PROJECT_COL_START, len(header_row))):
-            designator = _cell_text(row[col_index] if col_index < len(row) else None)
-            if designator:
-                designators_by_project[project] = designator
+            designators = parse_designators(row[col_index] if col_index < len(row) else None)
+            if designators:
+                designators_by_project[project] = designators
 
         records.append(
             ChipRecord(
