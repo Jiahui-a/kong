@@ -73,7 +73,10 @@ def sync_folder(
     dry_run: bool = False,
     overwrite: bool = False,
 ) -> SyncAction:
-    """复制单个芯片测试文件夹到公盘并重命名。"""
+    """复制单个芯片测试文件夹到公盘并重命名。
+
+    仅修改公盘目标目录（dest），不会改动本地源文件夹（src）。
+    """
     src = folder_match.folder_path
     original_name = src.name
     new_name = folder_match.record.target_name

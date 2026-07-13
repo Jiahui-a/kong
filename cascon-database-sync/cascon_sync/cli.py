@@ -18,7 +18,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="cascon-sync",
         description=(
             "根据 database.xlsx 将各 Cascon 项目中的芯片测试文件夹"
-            "复制到公盘 database，并统一重命名为 [型号 料号]。"
+            "复制到公盘 database。重命名仅作用于公盘副本，不修改本地源文件夹。"
         ),
     )
     parser.add_argument(
