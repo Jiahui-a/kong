@@ -1,26 +1,31 @@
-"""读取 database.xlsx 中的芯片型号/位号/料号映射。"""
+"""读取 database.xlsx 中的芯片料号/型号及各项目位号映射。"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from openpyxl import load_workbook
 
-# 支持的表头别名（不区分大小写）
-MODEL_HEADERS = ("型号", "芯片型号", "model", "part_model")
-DESIGNATOR_HEADERS = ("位号", "designator", "ref", "refdes")
-PART_NUMBER_HEADERS = ("料号", "part_number", "part no", "partno", "pn")
+# 固定列位置（1-based 列号）：第 2 列料号，第 3 列型号
+PART_NUMBER_COL = 1  # B 列，0-based index
+MODEL_COL = 2  # C 列，0-based index
+PROJECT_COL_START = 3  # D 列及之后为各项目位号
 
 
 @dataclass(frozen=True)
 class ChipRecord:
     """单条芯片映射记录。"""
 
-    model: str
-    designator: str
     part_number: str
+    model: str
+    designators_by_project: dict[str, str]
     row_index: int
+
+    def designator_in(self, project_name: str) -> str:
+        """获取该料号在指定项目中的位号。"""
+        return self.designators_by_project.get(project_name, "")
 
     @property
     def target_name(self) -> str:
@@ -28,18 +33,15 @@ class ChipRecord:
         return f"[{self.model} {self.part_number}]"
 
 
-def _normalize_header(value: object) -> str:
-    if value is None:
-        return ""
-    return str(value).strip().lower()
+@dataclass
+class Database:
+    """database.xlsx 解析结果。"""
 
+    records: list[ChipRecord] = field(default_factory=list)
+    project_names: list[str] = field(default_factory=list)
 
-def _find_column_index(headers: list[str], aliases: tuple[str, ...]) -> int | None:
-    normalized_aliases = {alias.lower() for alias in aliases}
-    for index, header in enumerate(headers):
-        if header in normalized_aliases:
-            return index
-    return None
+    def projects_set(self) -> set[str]:
+        return set(self.project_names)
 
 
 def _cell_text(value: object) -> str:
@@ -48,10 +50,28 @@ def _cell_text(value: object) -> str:
     return str(value).strip()
 
 
-def load_database(xlsx_path: Path) -> list[ChipRecord]:
-    """从 Excel 文件加载芯片映射表。
+def normalize_project_name(name: str) -> str:
+    """项目名规范化，用于文件夹名与表头匹配。"""
+    return re.sub(r"\s+", "", name).casefold()
 
-    要求首行包含「型号」「位号」「料号」列（支持常见别名）。
+
+def resolve_project_name(folder_name: str, known_projects: list[str]) -> str | None:
+    """将磁盘上的项目文件夹名解析为 database 表头中的项目名。"""
+    folder_key = normalize_project_name(folder_name)
+    for project in known_projects:
+        if normalize_project_name(project) == folder_key:
+            return project
+    return None
+
+
+def load_database(xlsx_path: Path) -> Database:
+    """从 Excel 加载芯片映射表。
+
+  列规则（首行为表头）：
+  - 第 1 列：可选序号
+  - 第 2 列：料号
+  - 第 3 列：型号
+  - 第 4 列起：项目名（表头），单元格值为该料号在该项目中的位号
     """
     if not xlsx_path.is_file():
         raise FileNotFoundError(f"找不到 database 文件: {xlsx_path}")
@@ -64,22 +84,23 @@ def load_database(xlsx_path: Path) -> list[ChipRecord]:
     if not rows:
         raise ValueError(f"database 文件为空: {xlsx_path}")
 
-    headers = [_normalize_header(cell) for cell in rows[0]]
-    model_col = _find_column_index(headers, MODEL_HEADERS)
-    designator_col = _find_column_index(headers, DESIGNATOR_HEADERS)
-    part_col = _find_column_index(headers, PART_NUMBER_HEADERS)
-
-    missing = []
-    if model_col is None:
-        missing.append("型号")
-    if designator_col is None:
-        missing.append("位号")
-    if part_col is None:
-        missing.append("料号")
-    if missing:
+    header_row = rows[0]
+    if len(header_row) <= MODEL_COL:
         raise ValueError(
-            f"database.xlsx 缺少必要列: {', '.join(missing)}。"
-            f"当前表头: {list(rows[0])}"
+            "database.xlsx 列数不足，至少需要：第 2 列料号、第 3 列型号。"
+            f"当前表头: {list(header_row)}"
+        )
+
+    project_names: list[str] = []
+    for col_index in range(PROJECT_COL_START, len(header_row)):
+        project = _cell_text(header_row[col_index])
+        if project:
+            project_names.append(project)
+
+    if not project_names:
+        raise ValueError(
+            "database.xlsx 未找到项目列（第 4 列起应为项目名表头）。"
+            f"当前表头: {list(header_row)}"
         )
 
     records: list[ChipRecord] = []
@@ -87,23 +108,28 @@ def load_database(xlsx_path: Path) -> list[ChipRecord]:
         if row is None:
             continue
 
-        model = _cell_text(row[model_col] if model_col < len(row) else None)
-        designator = _cell_text(row[designator_col] if designator_col < len(row) else None)
-        part_number = _cell_text(row[part_col] if part_col < len(row) else None)
+        part_number = _cell_text(row[PART_NUMBER_COL] if PART_NUMBER_COL < len(row) else None)
+        model = _cell_text(row[MODEL_COL] if MODEL_COL < len(row) else None)
 
-        if not model and not designator and not part_number:
+        if not part_number and not model:
             continue
-        if not model or not part_number:
+        if not part_number or not model:
             raise ValueError(
-                f"第 {row_index} 行数据不完整，型号与料号均不能为空: "
-                f"型号={model!r}, 位号={designator!r}, 料号={part_number!r}"
+                f"第 {row_index} 行数据不完整，料号与型号均不能为空: "
+                f"料号={part_number!r}, 型号={model!r}"
             )
+
+        designators_by_project: dict[str, str] = {}
+        for project, col_index in zip(project_names, range(PROJECT_COL_START, len(header_row))):
+            designator = _cell_text(row[col_index] if col_index < len(row) else None)
+            if designator:
+                designators_by_project[project] = designator
 
         records.append(
             ChipRecord(
-                model=model,
-                designator=designator,
                 part_number=part_number,
+                model=model,
+                designators_by_project=designators_by_project,
                 row_index=row_index,
             )
         )
@@ -111,4 +137,4 @@ def load_database(xlsx_path: Path) -> list[ChipRecord]:
     if not records:
         raise ValueError(f"database.xlsx 中没有有效数据行: {xlsx_path}")
 
-    return records
+    return Database(records=records, project_names=project_names)

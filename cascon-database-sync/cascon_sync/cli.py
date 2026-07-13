@@ -26,7 +26,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--database",
         required=True,
         type=Path,
-        help="database.xlsx 路径（包含型号/位号/料号映射）",
+        help="database.xlsx 路径（第2列料号、第3列型号、后续列为各项目位号）",
     )
     parser.add_argument(
         "-s",
@@ -34,7 +34,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs="+",
         required=True,
         type=Path,
-        help="一个或多个 Cascon 项目根目录",
+        help="Cascon 工作区根目录（含各项目子文件夹）或单个项目目录",
     )
     parser.add_argument(
         "-o",
@@ -48,11 +48,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--config",
         type=Path,
         help="可选 YAML 配置文件（可覆盖 database/source/output 等参数）",
-    )
-    parser.add_argument(
-        "--recursive",
-        action="store_true",
-        help="递归扫描项目子目录中的芯片测试文件夹（默认仅扫描项目根下一级）",
     )
     parser.add_argument(
         "--dry-run",
@@ -91,8 +86,6 @@ def _apply_config(args: argparse.Namespace) -> argparse.Namespace:
         args.source = [Path(p) for p in config["source"]]
     if "output" in config and config["output"]:
         args.output = Path(config["output"])
-    if "recursive" in config:
-        args.recursive = bool(config["recursive"])
     if "dry_run" in config:
         args.dry_run = bool(config["dry_run"])
     if "overwrite" in config:
@@ -105,22 +98,28 @@ def _print_report(report) -> None:
     print("Cascon 芯片测试文件夹同步报告")
     print("=" * 60)
 
+    if report.warnings:
+        print("提示:")
+        for warning in report.warnings:
+            print(f"  * {warning}")
+        print("-" * 60)
+
     for action in report.actions:
-        status = "跳过" if action.skipped else ("预览" if action.destination and not action.destination.exists() else "完成")
+        status = "跳过" if action.skipped else "预览" if action.skipped is False and not action.destination.exists() else "完成"
         if action.skipped:
-            print(f"[跳过] {action.source.name} -> {action.destination.name}")
+            print(f"[跳过] [{action.project_name}] {action.source.name} -> {action.destination.name}")
             print(f"       原因: {action.skip_reason}")
         else:
-            print(f"[{status}] {action.source}")
+            print(f"[{status}] [{action.project_name}] {action.source.name} ({action.match_type})")
             print(f"       -> {action.destination}")
             if action.renamed_internals:
-                print("       内部同名项重命名:")
+                print("       公盘内部同名项重命名:")
                 for old_path, new_path in action.renamed_internals:
                     print(f"         {old_path.name} -> {new_path.name}")
 
     if report.unmatched_folders:
         print("-" * 60)
-        print("未匹配的文件夹:")
+        print("未匹配的芯片测试文件夹:")
         for folder in report.unmatched_folders:
             print(f"  - {folder}")
 
@@ -145,14 +144,17 @@ def _write_json_report(report, path: Path) -> None:
         "skipped_count": report.skipped_count,
         "unmatched_count": len(report.unmatched_folders),
         "error_count": len(report.errors),
+        "warnings": report.warnings,
         "actions": [
             {
                 "source": str(action.source),
                 "destination": str(action.destination),
+                "project_name": action.project_name,
+                "match_type": action.match_type,
                 "target_name": action.record.target_name,
                 "model": action.record.model,
-                "designator": action.record.designator,
                 "part_number": action.record.part_number,
+                "designator": action.record.designator_in(action.project_name),
                 "skipped": action.skipped,
                 "skip_reason": action.skip_reason,
                 "renamed_internals": [
@@ -173,16 +175,15 @@ def main(argv: list[str] | None = None) -> int:
     args = _apply_config(_parse_args(argv))
 
     try:
-        records = load_database(args.database)
+        database = load_database(args.database)
     except (OSError, ValueError) as exc:
         print(f"读取 database 失败: {exc}", file=sys.stderr)
         return 1
 
     report = sync_projects(
-        project_dirs=args.source,
-        database_records=records,
+        source_paths=args.source,
+        database=database,
         dest_root=args.output,
-        recursive=args.recursive,
         dry_run=args.dry_run,
         overwrite=args.overwrite,
     )

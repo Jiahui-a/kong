@@ -1,16 +1,13 @@
 # database.xlsx 路径
 database: ./database.xlsx
 
-# 各同事本地的 Cascon 项目目录（可配置多个）
+# Cascon 工作区根目录（自动遍历其中与 database 项目列同名的子文件夹）
+# 也可直接填写单个项目目录
 source:
-  - /path/to/cascon/project_a
-  - /path/to/cascon/project_b
+  - /path/to/cascon/workspace
 
 # 公盘 database 输出目录
 output: /path/to/public/database
-
-# 是否递归扫描子目录
-recursive: false
 
 # 预览模式（true 时不实际复制）
 dry_run: true

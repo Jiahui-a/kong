@@ -1,23 +1,68 @@
 # Cascon 芯片测试文件夹同步工具
 
-将各同事本地 Cascon 项目中的芯片测试文件夹，按 `database.xlsx` 中的**型号 / 位号 / 料号**映射关系，**复制**到公盘 `database` 目录。重命名**仅发生在公盘副本上**，各同事本地项目中的原始文件夹**不会被修改**。
+将各同事本地 Cascon 项目中的芯片测试文件夹，按 `database.xlsx` 映射关系**复制**到公盘 `database` 目录。重命名**仅发生在公盘副本上**，本地原始文件夹不会被修改。
 
-## 背景
+## database.xlsx 列规则
 
-- 每位同事的 Cascon 项目目录结构相近，但芯片测试文件夹命名不一致
-- `database.xlsx` 记录各芯片的型号、位号、料号对应关系
-- 公盘需要统一存放所有芯片测试数据，且命名规范一致
-- 芯片文件夹内通常还存在与文件夹同名的文件或子文件夹，也需要一并重命名
+| 列 | 含义 |
+|----|------|
+| 第 1 列 | 可选序号 |
+| **第 2 列** | **料号** |
+| **第 3 列** | **型号** |
+| 第 4 列起 | **项目名**（表头），单元格值为该料号在该项目中的**位号** |
 
-## 功能
+示例：
 
-1. 读取 `database.xlsx`（必需列：**型号**、**位号**、**料号**）
-2. 扫描一个或多个本地项目目录，自动识别芯片测试文件夹（**只读，不修改本地**）
-3. 根据位号 / 料号 / 型号等信息匹配 `database` 记录
-4. **复制**到公盘，并将公盘上的文件夹重命名为 `[型号 料号]`
-5. 将公盘副本内与原始文件夹同名的文件、子文件夹也重命名为 `[型号 料号]`
+| 序号 | 料号 | 型号 | ProjectA | ProjectB |
+|------|------|------|----------|----------|
+| 1 | C12345-001 | STM32F103C8T6 | U1 | U5 |
+| 2 | C12345-002 | GD32F303CCT6 | U2 | |
 
-> **重要**：本地源文件夹始终保持原名（如 `U1`），所有重命名操作仅作用于公盘 `--output` 目录中的副本。
+同一料号在不同项目中位号可以不同（如 ProjectA 为 `U1`，ProjectB 为 `U5`）。
+
+## 目录遍历规则
+
+```text
+同事电脑 Cascon 工作区/
+├── ProjectA/              ← 文件夹名须与 database 项目列表头一致
+│   ├── [U1]/              ← 芯片测试项文件夹（下一级）
+│   ├── [STM32F103C8T6]/
+│   └── [STM32F103C8T6 U1]/
+└── ProjectB/
+    └── [U5]/
+```
+
+1. 在 `--source` 指定的工作区中，查找名称与 database 项目列匹配的**项目文件夹**
+2. 在每个项目文件夹的**直接子目录**中，查找芯片测试项文件夹
+3. 芯片文件夹名通常被 `[]` 包裹，工具会自动去掉外层方括号再匹配
+
+`--source` 可以是：
+- **工作区根目录**（自动遍历其子文件夹中与 database 项目列同名的目录）
+- **单个项目目录**（目录名本身即为项目名）
+
+## 文件夹查找与匹配规则
+
+在**项目上下文**中匹配（位号取自该项目对应列，不会跨项目混淆）。
+
+### 命名预处理
+
+1. 去掉文件夹名外层 `[]`，如 `[U1]` → `U1`
+2. 比对时忽略大小写，忽略空格、`_`、`-` 差异
+
+### 匹配优先级（从高到低）
+
+| 优先级 | 规则 | 示例（ProjectA 位号为 U1，型号 STM32F103C8T6） |
+|--------|------|------------------------------------------------|
+| 1 | **位号精确匹配** | `[U1]` |
+| 2 | **型号+位号组合** | `[STM32F103C8T6 U1]`、`[U1 STM32F103C8T6]`、`[U1-STM32F103C8T6]` |
+| 3 | **令牌集合匹配** | 组合名分隔符不同，但包含的型号/位号令牌相同 |
+| 4 | **型号精确匹配** | `[STM32F103C8T6]`（且该料号在本项目有位号） |
+
+### 约束条件
+
+- 只在 database 中**该项目列有位号**的记录里查找
+- 若同一规则匹配到多条记录，视为歧义，不自动同步（报告错误）
+- 公盘目标名统一为：`[型号 料号]`，如 `[STM32F103C8T6 C12345-001]`
 
 ## 安装
 
@@ -26,97 +71,45 @@ cd cascon-database-sync
 pip install -r requirements.txt
 ```
 
-## database.xlsx 格式
-
-| 型号 | 位号 | 料号 |
-|------|------|------|
-| STM32F103C8T6 | U1 | C12345-001 |
-| GD32F303CCT6 | U2 | C12345-002 |
-
-可使用模板生成脚本：
+生成 database 模板：
 
 ```bash
 python scripts/create_template.py
 ```
 
-模板输出路径：`templates/database_template.xlsx`
-
 ## 使用方法
 
-### 命令行
-
 ```bash
+# 预览（推荐先执行）
 python -m cascon_sync \
   --database ./database.xlsx \
-  --source /path/to/project_a /path/to/project_b \
-  --output /path/to/public/database
-```
+  --source "D:\Cascon" \
+  --output "Z:\database" \
+  --dry-run
 
-常用参数：
-
-| 参数 | 说明 |
-|------|------|
-| `-d, --database` | database.xlsx 路径 |
-| `-s, --source` | 一个或多个项目根目录 |
-| `-o, --output` | 公盘 database 输出目录 |
-| `--recursive` | 递归扫描子目录（默认只扫描项目根下一级） |
-| `--dry-run` | 预览模式，不实际复制 |
-| `--overwrite` | 目标已存在时覆盖 |
-| `--json-report` | 输出 JSON 格式同步报告 |
-| `-c, --config` | 使用 YAML 配置文件 |
-
-### 预览（推荐先执行）
-
-```bash
+# 正式同步
 python -m cascon_sync \
   -d ./database.xlsx \
-  -s "D:\Cascon\ProjectA" \
-  -o "Z:\database" \
-  --dry-run
+  -s "D:\Cascon" \
+  -o "Z:\database"
 ```
-
-### 配置文件
-
-复制 `config.example.yaml` 并修改路径后：
-
-```bash
-python -m cascon_sync -c config.yaml
-```
-
-## 匹配规则
-
-工具会按以下顺序尝试将文件夹名与 `database` 记录匹配：
-
-1. **精确匹配**：位号、料号、型号，或常见组合（如 `U1_C12345-001`）
-2. **拆分匹配**：按下划线、连字符、空格拆分文件夹名后逐段匹配
-3. **包含匹配**：文件夹名中包含位号或料号时匹配（优先更长料号，减少误匹配）
-
-若文件夹无法匹配，会在报告中列出，便于补充 `database.xlsx` 或调整命名。
 
 ## 重命名示例
 
-假设本地项目文件夹名为 `U1`（**本地保持 `U1` 不变**），`database` 中对应：
-
-- 型号：`STM32F103C8T6`
-- 料号：`C12345-001`
-
-同步后：
-
 **本地（不变）：**
+
 ```text
-D:\Cascon\ProjectA\U1\
-  U1\
-  U1.xlsx
-  readme.txt
+D:\Cascon\ProjectA\[U1]\
+  [U1]\
+  [U1].xlsx
 ```
 
 **公盘（重命名）：**
+
 ```text
-Z:\database\
+Z:\database\[STM32F103C8T6 C12345-001]\
   [STM32F103C8T6 C12345-001]\
-    [STM32F103C8T6 C12345-001]        # 原 U1 同名子文件夹
-    [STM32F103C8T6 C12345-001].xlsx   # 原 U1.xlsx
-    readme.txt                        # 其他文件保持不变
+  [STM32F103C8T6 C12345-001].xlsx
 ```
 
 ## 项目结构
@@ -124,26 +117,10 @@ Z:\database\
 ```text
 cascon-database-sync/
 ├── cascon_sync/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── cli.py          # 命令行入口
-│   ├── database.py     # 读取 database.xlsx
-│   ├── matcher.py      # 文件夹匹配逻辑
-│   └── sync.py         # 复制与重命名
-├── scripts/
-│   └── create_template.py
+│   ├── database.py     # 读取 database.xlsx（第2列料号、第3列型号、项目列位号）
+│   ├── matcher.py      # 项目上下文下的文件夹匹配规则
+│   └── sync.py         # 复制到公盘并重命名
 ├── templates/
-│   └── database_template.xlsx
 ├── tests/
-│   └── test_sync.py
-├── config.example.yaml
-├── requirements.txt
 └── README.md
 ```
-
-## 注意事项
-
-- 建议先使用 `--dry-run` 确认匹配结果
-- 默认不覆盖已存在的目标文件夹，需覆盖时加 `--overwrite`
-- 公盘路径请确保有写入权限
-- Windows 下路径可使用 `Z:\database` 等形式

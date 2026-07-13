@@ -6,8 +6,8 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .database import ChipRecord
-from .matcher import FolderMatch, match_project_folders
+from .database import Database
+from .matcher import FolderMatch, match_all_sources
 
 
 @dataclass
@@ -16,7 +16,9 @@ class SyncAction:
 
     source: Path
     destination: Path
-    record: ChipRecord
+    project_name: str
+    record: object
+    match_type: str = ""
     renamed_internals: list[tuple[Path, Path]] = field(default_factory=list)
     skipped: bool = False
     skip_reason: str = ""
@@ -28,6 +30,7 @@ class SyncReport:
 
     actions: list[SyncAction] = field(default_factory=list)
     unmatched_folders: list[Path] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -40,7 +43,7 @@ class SyncReport:
 
 
 def _rename_same_name_children(dest_folder: Path, original_name: str, new_name: str) -> list[tuple[Path, Path]]:
-    """将目标文件夹内与原始文件夹同名的文件/子文件夹重命名。"""
+    """将公盘副本内与原始文件夹同名的文件/子文件夹重命名。"""
     renamed: list[tuple[Path, Path]] = []
 
     for child in dest_folder.iterdir():
@@ -82,7 +85,13 @@ def sync_folder(
     new_name = folder_match.record.target_name
     dest = dest_root / new_name
 
-    action = SyncAction(source=src, destination=dest, record=folder_match.record)
+    action = SyncAction(
+        source=src,
+        destination=dest,
+        project_name=folder_match.project_name,
+        record=folder_match.record,
+        match_type=folder_match.match_type,
+    )
 
     if dest.exists():
         if overwrite:
@@ -108,54 +117,43 @@ def sync_folder(
 
 
 def sync_projects(
-    project_dirs: list[Path],
-    database_records: list[ChipRecord],
+    source_paths: list[Path],
+    database: Database,
     dest_root: Path,
     *,
-    recursive: bool = False,
     dry_run: bool = False,
     overwrite: bool = False,
 ) -> SyncReport:
-    """同步多个项目目录中的芯片测试文件夹。"""
+    """同步源路径中各项目的芯片测试文件夹到公盘。"""
     report = SyncReport()
     dest_root.mkdir(parents=True, exist_ok=True)
 
+    matched, unmatched, warnings = match_all_sources(source_paths, database)
+    report.unmatched_folders = unmatched
+    report.warnings = warnings
+
     seen_targets: dict[str, Path] = {}
 
-    for project_dir in project_dirs:
-        if not project_dir.is_dir():
-            report.errors.append(f"项目目录不存在: {project_dir}")
+    for folder_match in matched:
+        target_key = folder_match.record.target_name
+        if target_key in seen_targets:
+            report.errors.append(
+                f"重复目标名称 {target_key}: "
+                f"{seen_targets[target_key]} 与 {folder_match.folder_path}"
+            )
             continue
 
-        matched, unmatched = match_project_folders(
-            project_dir,
-            database_records,
-            recursive=recursive,
-        )
-        report.unmatched_folders.extend(unmatched)
-
-        for folder_match in matched:
-            target_key = folder_match.record.target_name
-            if target_key in seen_targets:
-                report.errors.append(
-                    f"重复目标名称 {target_key}: "
-                    f"{seen_targets[target_key]} 与 {folder_match.folder_path}"
-                )
-                continue
-
-            try:
-                action = sync_folder(
-                    folder_match,
-                    dest_root,
-                    dry_run=dry_run,
-                    overwrite=overwrite,
-                )
-                report.actions.append(action)
-                if not action.skipped:
-                    seen_targets[target_key] = folder_match.folder_path
-            except Exception as exc:  # noqa: BLE001 - 汇总错误继续处理
-                report.errors.append(
-                    f"同步失败 {folder_match.folder_path}: {exc}"
-                )
+        try:
+            action = sync_folder(
+                folder_match,
+                dest_root,
+                dry_run=dry_run,
+                overwrite=overwrite,
+            )
+            report.actions.append(action)
+            if not action.skipped:
+                seen_targets[target_key] = folder_match.folder_path
+        except Exception as exc:  # noqa: BLE001
+            report.errors.append(f"同步失败 {folder_match.folder_path}: {exc}")
 
     return report

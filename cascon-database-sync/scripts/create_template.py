@@ -10,10 +10,10 @@ def create_template(output: Path) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "芯片映射"
-    sheet.append(["型号", "位号", "料号"])
-    sheet.append(["STM32F103C8T6", "U1", "C12345-001"])
-    sheet.append(["GD32F303CCT6", "U2", "C12345-002"])
-    sheet.append(["W25Q128JVSIQ", "U3", "C12345-003"])
+    sheet.append(["序号", "料号", "型号", "ProjectA", "ProjectB"])
+    sheet.append(["1", "C12345-001", "STM32F103C8T6", "U1", "U5"])
+    sheet.append(["2", "C12345-002", "GD32F303CCT6", "U2", ""])
+    sheet.append(["3", "C12345-003", "W25Q128JVSIQ", "U3", "U8"])
     output.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output)
     print(f"已生成模板: {output}")
