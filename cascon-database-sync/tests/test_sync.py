@@ -1,0 +1,162 @@
+"""单元测试。"""
+
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+from openpyxl import Workbook
+
+from cascon_sync.database import load_database, parse_designators
+from cascon_sync.matcher import (
+    discover_project_dirs,
+    match_all_sources,
+    match_folder_in_project,
+    match_project_folders,
+    parse_chip_folder_name,
+)
+from cascon_sync.sync import sync_projects
+
+
+def _create_database_xlsx(path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["序号", "料号", "型号", "ProjectA", "ProjectB"])
+    sheet.append(["1", "C12345-001", "STM32F103C8T6", "U1", "U5"])
+    sheet.append(["2", "C12345-002", "GD32F303CCT6", "U2", ""])
+    workbook.save(path)
+
+
+class CasconSyncTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir)
+
+    def _load_db(self):
+        xlsx = self.temp_dir / "database.xlsx"
+        _create_database_xlsx(xlsx)
+        return load_database(xlsx)
+
+    def test_load_database_columns(self) -> None:
+        database = self._load_db()
+        self.assertEqual(len(database.records), 2)
+        self.assertEqual(database.project_names, ["ProjectA", "ProjectB"])
+        self.assertEqual(database.records[0].part_number, "C12345-001")
+        self.assertEqual(database.records[0].model, "STM32F103C8T6")
+        self.assertEqual(database.records[0].designators_in("ProjectA"), ["U1"])
+        self.assertEqual(database.records[0].designators_in("ProjectB"), ["U5"])
+        self.assertEqual(database.records[0].target_name, "[STM32F103C8T6 C12345-001]")
+
+    def test_parse_bracket_name(self) -> None:
+        self.assertEqual(parse_chip_folder_name("[U1]"), "U1")
+        self.assertEqual(parse_chip_folder_name("[STM32F103C8T6 U1]"), "STM32F103C8T6 U1")
+
+    def test_match_designator_only(self) -> None:
+        database = self._load_db()
+        result = match_folder_in_project("[U1]", "ProjectA", database.records)
+        self.assertIsNotNone(result)
+        record, match_type, _ = result  # type: ignore[misc]
+        self.assertEqual(record.part_number, "C12345-001")
+        self.assertEqual(match_type, "designator_exact")
+
+    def test_match_model_only(self) -> None:
+        database = self._load_db()
+        result = match_folder_in_project("[STM32F103C8T6]", "ProjectA", database.records)
+        self.assertIsNotNone(result)
+        record, match_type, _ = result  # type: ignore[misc]
+        self.assertEqual(record.part_number, "C12345-001")
+        self.assertEqual(match_type, "model_exact")
+
+    def test_match_mixed_name(self) -> None:
+        database = self._load_db()
+        for folder_name in ("[STM32F103C8T6 U1]", "[U1 STM32F103C8T6]", "[U1-STM32F103C8T6]"):
+            result = match_folder_in_project(folder_name, "ProjectA", database.records)
+            self.assertIsNotNone(result, folder_name)
+            record, _, _ = result  # type: ignore[misc]
+            self.assertEqual(record.part_number, "C12345-001")
+
+    def test_match_respects_project_designator(self) -> None:
+        database = self._load_db()
+        result_a = match_folder_in_project("[U5]", "ProjectA", database.records)
+        result_b = match_folder_in_project("[U5]", "ProjectB", database.records)
+        self.assertIsNone(result_a)
+        self.assertIsNotNone(result_b)
+        record, _, _ = result_b  # type: ignore[misc]
+        self.assertEqual(record.part_number, "C12345-001")
+
+    def test_discover_projects_from_workspace(self) -> None:
+        database = self._load_db()
+        workspace = self.temp_dir / "cascon"
+        (workspace / "ProjectA").mkdir(parents=True)
+        (workspace / "ProjectB").mkdir(parents=True)
+        (workspace / "Other").mkdir(parents=True)
+
+        projects = discover_project_dirs([workspace], database)
+        names = {name for _, name in projects}
+        self.assertEqual(names, {"ProjectA", "ProjectB"})
+
+    def test_sync_with_internal_rename(self) -> None:
+        database = self._load_db()
+        workspace = self.temp_dir / "cascon"
+        chip_folder = workspace / "ProjectA" / "[U1]"
+        chip_folder.mkdir(parents=True)
+        (chip_folder / "[U1]").mkdir()
+        (chip_folder / "[U1].txt").write_text("data", encoding="utf-8")
+        (chip_folder / "readme.txt").write_text("ok", encoding="utf-8")
+
+        output = self.temp_dir / "database"
+        report = sync_projects([workspace], database, output)
+
+        self.assertEqual(report.copied_count, 1)
+        dest = output / "[STM32F103C8T6 C12345-001]"
+        self.assertTrue(dest.is_dir())
+        self.assertTrue((dest / "[STM32F103C8T6 C12345-001]").is_dir())
+        self.assertTrue((dest / "[STM32F103C8T6 C12345-001].txt").is_file())
+        self.assertTrue((dest / "readme.txt").is_file())
+
+    def test_unmatched_folder_reported(self) -> None:
+        database = self._load_db()
+        workspace = self.temp_dir / "cascon"
+        (workspace / "ProjectA" / "[UNKNOWN]").mkdir(parents=True)
+
+        matched, unmatched, _ = match_all_sources([workspace], database)
+        self.assertEqual(len(matched), 0)
+        self.assertEqual(len(unmatched), 1)
+
+    def test_parse_multiline_designators(self) -> None:
+        self.assertEqual(parse_designators("U1\nU2\nU3"), ["U1", "U2", "U3"])
+        self.assertEqual(parse_designators("U1,U2;U3"), ["U1", "U2", "U3"])
+        self.assertEqual(parse_designators("U1\nU1"), ["U1"])
+
+    def test_match_multiline_designators_in_cell(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-003", "W25Q128JVSIQ", "U3\nU4\nU5"])
+        xlsx = self.temp_dir / "multiline.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        self.assertEqual(database.records[0].designators_in("ProjectA"), ["U3", "U4", "U5"])
+
+        for folder in ("[U3]", "[U4]", "[U5]", "[W25Q128JVSIQ U4]"):
+            result = match_folder_in_project(folder, "ProjectA", database.records)
+            self.assertIsNotNone(result, folder)
+            record, _, _ = result  # type: ignore[misc]
+            self.assertEqual(record.part_number, "C12345-003")
+
+    def test_match_project_folders(self) -> None:
+        database = self._load_db()
+        project = self.temp_dir / "ProjectA"
+        (project / "[U1]").mkdir(parents=True)
+        (project / "[U2]").mkdir(parents=True)
+
+        matched, unmatched = match_project_folders(project, "ProjectA", database.records)
+        self.assertEqual(len(matched), 2)
+        self.assertEqual(len(unmatched), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

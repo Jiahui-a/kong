@@ -1,0 +1,16 @@
+# database.xlsx 路径
+database: ./database.xlsx
+
+# Cascon 工作区根目录（自动遍历其中与 database 项目列同名的子文件夹）
+# 也可直接填写单个项目目录
+source:
+  - /path/to/cascon/workspace
+
+# 公盘 database 输出目录
+output: /path/to/public/database
+
+# 预览模式（true 时不实际复制）
+dry_run: true
+
+# 目标已存在时是否覆盖
+overwrite: false
