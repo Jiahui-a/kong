@@ -1,0 +1,19 @@
+# database.xlsx 路径
+database: ./database.xlsx
+
+# 各同事本地的 Cascon 项目目录（可配置多个）
+source:
+  - /path/to/cascon/project_a
+  - /path/to/cascon/project_b
+
+# 公盘 database 输出目录
+output: /path/to/public/database
+
+# 是否递归扫描子目录
+recursive: false
+
+# 预览模式（true 时不实际复制）
+dry_run: true
+
+# 目标已存在时是否覆盖
+overwrite: false
