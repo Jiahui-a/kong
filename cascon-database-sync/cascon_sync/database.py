@@ -31,10 +31,21 @@ class ChipRecord:
         """获取位号的文本表示（多位号以换行连接）。"""
         return "\n".join(self.designators_in(project_name))
 
-    @property
-    def target_name(self) -> str:
-        """公盘目标文件夹名：[型号 料号]"""
-        return f"[{self.model} {self.part_number}]"
+    def target_name(self, project_name: str = "", designator: str = "") -> str:
+        """公盘目标文件夹名，仅包含非空的型号、料号、位号。"""
+        parts: list[str] = []
+        if self.model:
+            parts.append(self.model)
+        if self.part_number:
+            parts.append(self.part_number)
+        resolved_designator = designator or (
+            self.designators_in(project_name)[0] if project_name and len(self.designators_in(project_name)) == 1 else ""
+        )
+        if resolved_designator:
+            parts.append(resolved_designator)
+        if not parts:
+            raise ValueError("目标名称至少需要一个非空字段（型号、料号或位号）")
+        return f"[{' '.join(parts)}]"
 
 
 @dataclass
@@ -55,12 +66,12 @@ def _cell_text(value: object) -> str:
 
 
 def parse_designators(value: object) -> list[str]:
-    """解析项目列中的位号，支持单元格内换行及常见分隔符。
+    """解析项目列中的位号，支持顿号、换行及常见分隔符。
 
-    例如 Excel 单元格内容为::
+    例如 Excel 单元格内容为 ``U1、U2、U3`` 或::
+
         U1
         U2
-        U3
 
     将解析为 [\"U1\", \"U2\", \"U3\"]。
     """
@@ -97,22 +108,148 @@ def resolve_project_name(folder_name: str, known_projects: list[str]) -> str | N
     return None
 
 
+def _merge_designator_lists(existing: list[str], new: list[str]) -> list[str]:
+    """合并位号列表，保持顺序并去重。"""
+    seen = {designator.casefold() for designator in existing}
+    merged = list(existing)
+    for designator in new:
+        key = designator.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(designator)
+    return merged
+
+
+def resolve_inherited_value(raw_value: str, last_non_empty: str) -> tuple[str, str]:
+    """解析可继承字段：当前行非空则使用当前值，否则沿用上方最近非空值。
+
+    返回 (解析后的值, 更新后的最近非空值)。
+    """
+    if raw_value:
+        return raw_value, raw_value
+    return last_non_empty, last_non_empty
+
+
+def _merge_into_records(
+    records_map: dict[tuple[str, str], ChipRecord],
+    part_number: str,
+    model: str,
+    designators_by_project: dict[str, list[str]],
+    row_index: int,
+) -> None:
+    """将一行项目位号合并到 records_map 中。"""
+    key = (part_number, model)
+    if key not in records_map:
+        records_map[key] = ChipRecord(
+            part_number=part_number,
+            model=model,
+            designators_by_project=designators_by_project,
+            row_index=row_index,
+        )
+        return
+
+    existing = records_map[key]
+    merged_projects = dict(existing.designators_by_project)
+    for project, designators in designators_by_project.items():
+        if project in merged_projects:
+            merged_projects[project] = _merge_designator_lists(merged_projects[project], designators)
+        else:
+            merged_projects[project] = list(designators)
+
+    records_map[key] = ChipRecord(
+        part_number=part_number,
+        model=model,
+        designators_by_project=merged_projects,
+        row_index=existing.row_index,
+    )
+
+
+def _build_merged_cell_lookup(sheet) -> dict[tuple[int, int], object]:
+    """构建合并单元格查找表，键为 (row, col) 的 0-based 索引。"""
+    lookup: dict[tuple[int, int], object] = {}
+    merged_cells = getattr(sheet, "merged_cells", None)
+    if merged_cells is None:
+        return lookup
+
+    for cell_range in merged_cells.ranges:
+        top_left_value = sheet.cell(cell_range.min_row, cell_range.min_col).value
+        for row in range(cell_range.min_row, cell_range.max_row + 1):
+            for col in range(cell_range.min_col, cell_range.max_col + 1):
+                lookup[(row - 1, col - 1)] = top_left_value
+    return lookup
+
+
+def _resolve_cell_value(
+    value: object,
+    row_index: int,
+    col_index: int,
+    merged_lookup: dict[tuple[int, int], object],
+) -> object:
+    """读取单元格值，合并单元格非左上角位置回填合并区域的值。"""
+    merged_value = merged_lookup.get((row_index, col_index))
+    if merged_value is not None:
+        return merged_value
+    return value
+
+
+def _read_sheet_rows(sheet) -> list[tuple[object, ...]]:
+    """读取工作表全部行，并展开合并单元格的值。"""
+    merged_lookup = _build_merged_cell_lookup(sheet)
+    rows: list[tuple[object, ...]] = []
+
+    for row_index, row in enumerate(sheet.iter_rows(values_only=True)):
+        filled_row: list[object] = []
+        for col_index, value in enumerate(row):
+            filled_row.append(_resolve_cell_value(value, row_index, col_index, merged_lookup))
+        rows.append(tuple(filled_row))
+
+    return rows
+
+
+def _extract_project_columns(header_row: tuple[object, ...]) -> list[tuple[str, int]]:
+    """从表头解析项目列，合并表头单元格产生的重复列名只保留一次。"""
+    project_columns: list[tuple[str, int]] = []
+    previous_normalized = ""
+
+    for col_index in range(PROJECT_COL_START, len(header_row)):
+        project = _cell_text(header_row[col_index])
+        if not project:
+            continue
+
+        normalized = normalize_project_name(project)
+        if normalized == previous_normalized:
+            continue
+
+        project_columns.append((project, col_index))
+        previous_normalized = normalized
+
+    return project_columns
+
+
 def load_database(xlsx_path: Path) -> Database:
     """从 Excel 加载芯片映射表。
 
   列规则（首行为表头）：
   - 第 1 列：可选序号
-  - 第 2 列：料号
-  - 第 3 列：型号
+  - 第 2 列：料号（可为空；为空时向上继承最近非空料号）
+  - 第 3 列：型号（可为空；仅当前单元格有值时使用，不向上继承；合并单元格展开后算有值）
   - 第 4 列起：项目名（表头），单元格值为该料号在该项目中的位号
-    同一单元格内多位号可用换行、逗号、分号等分隔
+
+  行规则：
+  - 仅当所有项目列均为空时才跳过该行
+  - 料号为空但项目列有位号时保留该行，并向上查找最近非空料号
+  - 型号为空则保持为空，除非当前单元格（含合并单元格）有值
+  - 同一料号+型号的多行位号会合并到一条记录
+  - 同一项目列单元格内多位号可用顿号（、）、换行、逗号、分号等分隔
+  - 料号/型号列的 Excel 合并单元格会自动展开后再读取
     """
     if not xlsx_path.is_file():
         raise FileNotFoundError(f"找不到 database 文件: {xlsx_path}")
 
-    workbook = load_workbook(xlsx_path, read_only=True, data_only=True)
+    workbook = load_workbook(xlsx_path, data_only=True)
     sheet = workbook.active
-    rows = list(sheet.iter_rows(values_only=True))
+    rows = _read_sheet_rows(sheet)
     workbook.close()
 
     if not rows:
@@ -125,11 +262,8 @@ def load_database(xlsx_path: Path) -> Database:
             f"当前表头: {list(header_row)}"
         )
 
-    project_names: list[str] = []
-    for col_index in range(PROJECT_COL_START, len(header_row)):
-        project = _cell_text(header_row[col_index])
-        if project:
-            project_names.append(project)
+    project_columns = _extract_project_columns(header_row)
+    project_names = [project for project, _ in project_columns]
 
     if not project_names:
         raise ValueError(
@@ -137,38 +271,43 @@ def load_database(xlsx_path: Path) -> Database:
             f"当前表头: {list(header_row)}"
         )
 
-    records: list[ChipRecord] = []
+    records_map: dict[tuple[str, str], ChipRecord] = {}
+    last_part_number = ""
+
     for row_index, row in enumerate(rows[1:], start=2):
         if row is None:
             continue
 
-        part_number = _cell_text(row[PART_NUMBER_COL] if PART_NUMBER_COL < len(row) else None)
+        raw_part_number = _cell_text(row[PART_NUMBER_COL] if PART_NUMBER_COL < len(row) else None)
+        # 型号不向上继承：单元格为空则型号为空；合并单元格展开后若有值则使用该值
         model = _cell_text(row[MODEL_COL] if MODEL_COL < len(row) else None)
-
-        if not part_number and not model:
-            continue
-        if not part_number or not model:
-            raise ValueError(
-                f"第 {row_index} 行数据不完整，料号与型号均不能为空: "
-                f"料号={part_number!r}, 型号={model!r}"
-            )
+        part_number, last_part_number = resolve_inherited_value(raw_part_number, last_part_number)
 
         designators_by_project: dict[str, list[str]] = {}
-        for project, col_index in zip(project_names, range(PROJECT_COL_START, len(header_row))):
+        for project, col_index in project_columns:
             designators = parse_designators(row[col_index] if col_index < len(row) else None)
             if designators:
-                designators_by_project[project] = designators
+                if project in designators_by_project:
+                    designators_by_project[project] = _merge_designator_lists(
+                        designators_by_project[project],
+                        designators,
+                    )
+                else:
+                    designators_by_project[project] = designators
 
-        records.append(
-            ChipRecord(
-                part_number=part_number,
-                model=model,
-                designators_by_project=designators_by_project,
-                row_index=row_index,
-            )
+        if not designators_by_project:
+            continue
+
+        _merge_into_records(
+            records_map,
+            part_number,
+            model,
+            designators_by_project,
+            row_index,
         )
 
-    if not records:
+    if not records_map:
         raise ValueError(f"database.xlsx 中没有有效数据行: {xlsx_path}")
 
+    records = sorted(records_map.values(), key=lambda record: record.row_index)
     return Database(records=records, project_names=project_names)
