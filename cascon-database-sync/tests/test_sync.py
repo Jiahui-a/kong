@@ -128,6 +128,7 @@ class CasconSyncTests(unittest.TestCase):
     def test_parse_multiline_designators(self) -> None:
         self.assertEqual(parse_designators("U1\nU2\nU3"), ["U1", "U2", "U3"])
         self.assertEqual(parse_designators("U1,U2;U3"), ["U1", "U2", "U3"])
+        self.assertEqual(parse_designators("U1、U2、U3"), ["U1", "U2", "U3"])
         self.assertEqual(parse_designators("U1\nU1"), ["U1"])
 
     def test_match_multiline_designators_in_cell(self) -> None:
@@ -258,6 +259,41 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(resolve_inherited_value("C001", ""), ("C001", "C001"))
         self.assertEqual(resolve_inherited_value("", "C001"), ("C001", "C001"))
         self.assertEqual(resolve_inherited_value("", ""), ("", ""))
+
+    def test_merged_part_number_cells(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-200", "STM32F103", "U1、U2"])
+        sheet.append(["2", None, None, "U3"])
+        sheet.merge_cells("B2:B3")
+        sheet.merge_cells("C2:C3")
+        xlsx = self.temp_dir / "merged_part_number.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        self.assertEqual(len(database.records), 1)
+        record = database.records[0]
+        self.assertEqual(record.part_number, "C12345-200")
+        self.assertEqual(record.model, "STM32F103")
+        self.assertEqual(record.designators_in("ProjectA"), ["U1", "U2", "U3"])
+
+        for folder in ("[U1]", "[U2]", "[U3]", "[STM32F103 U3]"):
+            result = match_folder_in_project(folder, "ProjectA", database.records)
+            self.assertIsNotNone(result, folder)
+
+    def test_merged_header_project_column(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA", None])
+        sheet.append(["1", "C12345-300", "GD32F303", "U7", None])
+        sheet.merge_cells("D1:E1")
+        xlsx = self.temp_dir / "merged_header.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        self.assertEqual(database.project_names, ["ProjectA"])
+        self.assertEqual(database.records[0].designators_in("ProjectA"), ["U7"])
 
     def test_sync_with_empty_model(self) -> None:
         workbook = Workbook()

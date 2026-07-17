@@ -66,12 +66,12 @@ def _cell_text(value: object) -> str:
 
 
 def parse_designators(value: object) -> list[str]:
-    """解析项目列中的位号，支持单元格内换行及常见分隔符。
+    """解析项目列中的位号，支持顿号、换行及常见分隔符。
 
-    例如 Excel 单元格内容为::
+    例如 Excel 单元格内容为 ``U1、U2、U3`` 或::
+
         U1
         U2
-        U3
 
     将解析为 [\"U1\", \"U2\", \"U3\"]。
     """
@@ -165,6 +165,68 @@ def _merge_into_records(
     )
 
 
+def _build_merged_cell_lookup(sheet) -> dict[tuple[int, int], object]:
+    """构建合并单元格查找表，键为 (row, col) 的 0-based 索引。"""
+    lookup: dict[tuple[int, int], object] = {}
+    merged_cells = getattr(sheet, "merged_cells", None)
+    if merged_cells is None:
+        return lookup
+
+    for cell_range in merged_cells.ranges:
+        top_left_value = sheet.cell(cell_range.min_row, cell_range.min_col).value
+        for row in range(cell_range.min_row, cell_range.max_row + 1):
+            for col in range(cell_range.min_col, cell_range.max_col + 1):
+                lookup[(row - 1, col - 1)] = top_left_value
+    return lookup
+
+
+def _resolve_cell_value(
+    value: object,
+    row_index: int,
+    col_index: int,
+    merged_lookup: dict[tuple[int, int], object],
+) -> object:
+    """读取单元格值，合并单元格非左上角位置回填合并区域的值。"""
+    merged_value = merged_lookup.get((row_index, col_index))
+    if merged_value is not None:
+        return merged_value
+    return value
+
+
+def _read_sheet_rows(sheet) -> list[tuple[object, ...]]:
+    """读取工作表全部行，并展开合并单元格的值。"""
+    merged_lookup = _build_merged_cell_lookup(sheet)
+    rows: list[tuple[object, ...]] = []
+
+    for row_index, row in enumerate(sheet.iter_rows(values_only=True)):
+        filled_row: list[object] = []
+        for col_index, value in enumerate(row):
+            filled_row.append(_resolve_cell_value(value, row_index, col_index, merged_lookup))
+        rows.append(tuple(filled_row))
+
+    return rows
+
+
+def _extract_project_columns(header_row: tuple[object, ...]) -> list[tuple[str, int]]:
+    """从表头解析项目列，合并表头单元格产生的重复列名只保留一次。"""
+    project_columns: list[tuple[str, int]] = []
+    previous_normalized = ""
+
+    for col_index in range(PROJECT_COL_START, len(header_row)):
+        project = _cell_text(header_row[col_index])
+        if not project:
+            continue
+
+        normalized = normalize_project_name(project)
+        if normalized == previous_normalized:
+            continue
+
+        project_columns.append((project, col_index))
+        previous_normalized = normalized
+
+    return project_columns
+
+
 def load_database(xlsx_path: Path) -> Database:
     """从 Excel 加载芯片映射表。
 
@@ -178,14 +240,15 @@ def load_database(xlsx_path: Path) -> Database:
   - 仅当所有项目列均为空时才跳过该行
   - 料号为空但项目列有位号时保留该行，并向上查找最近非空料号
   - 同一料号+型号的多行位号会合并到一条记录
-    同一单元格内多位号可用换行、逗号、分号等分隔
+  - 同一项目列单元格内多位号可用顿号（、）、换行、逗号、分号等分隔
+  - 料号/型号列的 Excel 合并单元格会自动展开后再继承
     """
     if not xlsx_path.is_file():
         raise FileNotFoundError(f"找不到 database 文件: {xlsx_path}")
 
-    workbook = load_workbook(xlsx_path, read_only=True, data_only=True)
+    workbook = load_workbook(xlsx_path, data_only=True)
     sheet = workbook.active
-    rows = list(sheet.iter_rows(values_only=True))
+    rows = _read_sheet_rows(sheet)
     workbook.close()
 
     if not rows:
@@ -198,11 +261,8 @@ def load_database(xlsx_path: Path) -> Database:
             f"当前表头: {list(header_row)}"
         )
 
-    project_names: list[str] = []
-    for col_index in range(PROJECT_COL_START, len(header_row)):
-        project = _cell_text(header_row[col_index])
-        if project:
-            project_names.append(project)
+    project_columns = _extract_project_columns(header_row)
+    project_names = [project for project, _ in project_columns]
 
     if not project_names:
         raise ValueError(
@@ -224,10 +284,16 @@ def load_database(xlsx_path: Path) -> Database:
         model, last_model = resolve_inherited_value(raw_model, last_model)
 
         designators_by_project: dict[str, list[str]] = {}
-        for project, col_index in zip(project_names, range(PROJECT_COL_START, len(header_row))):
+        for project, col_index in project_columns:
             designators = parse_designators(row[col_index] if col_index < len(row) else None)
             if designators:
-                designators_by_project[project] = designators
+                if project in designators_by_project:
+                    designators_by_project[project] = _merge_designator_lists(
+                        designators_by_project[project],
+                        designators,
+                    )
+                else:
+                    designators_by_project[project] = designators
 
         if not designators_by_project:
             continue
