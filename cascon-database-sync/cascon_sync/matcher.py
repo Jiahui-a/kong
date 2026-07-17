@@ -27,6 +27,12 @@ class FolderMatch:
     record: ChipRecord
     match_type: str
     parsed_folder_name: str
+    matched_designator: str = ""
+
+    @property
+    def target_name(self) -> str:
+        """公盘目标文件夹名（按匹配到的位号生成）。"""
+        return self.record.target_name(self.project_name, self.matched_designator)
 
 
 def parse_chip_folder_name(folder_name: str) -> str:
@@ -71,7 +77,7 @@ def match_folder_in_project(
     folder_name: str,
     project_name: str,
     records: list[ChipRecord],
-) -> tuple[ChipRecord, str, str] | None:
+) -> tuple[ChipRecord, str, str, str] | None:
     """在指定项目上下文中，将文件夹名匹配到 database 记录。
 
   查找规则（按优先级）：
@@ -93,7 +99,7 @@ def match_folder_in_project(
     parsed_norm = _normalize_text(parsed)
     parsed_tokens = _tokenize(parsed)
 
-    candidates: list[tuple[ChipRecord, str, int]] = []
+    candidates: list[tuple[ChipRecord, str, int, str]] = []
 
     for record in records:
         designators = record.designators_in(project_name)
@@ -103,10 +109,10 @@ def match_folder_in_project(
         for designator in designators:
             for variant, match_type in _build_variants(record.model, designator):
                 if _normalize_text(variant) == parsed_norm:
-                    candidates.append((record, match_type, _PRIORITY[match_type]))
+                    candidates.append((record, match_type, _PRIORITY[match_type], designator))
                     break
                 elif len(parsed_tokens) >= 2 and _tokenize(variant) == parsed_tokens:
-                    candidates.append((record, "token_set", _PRIORITY["token_set"]))
+                    candidates.append((record, "token_set", _PRIORITY["token_set"], designator))
                     break
             else:
                 continue
@@ -121,8 +127,8 @@ def match_folder_in_project(
     unique_rows = {item[0].row_index for item in best_group}
 
     if len(unique_rows) == 1:
-        record, match_type, _ = best_group[0]
-        return record, match_type, parsed
+        record, match_type, _, designator = best_group[0]
+        return record, match_type, parsed, designator
 
     return None
 
@@ -190,7 +196,7 @@ def match_project_folders(
     for folder in discover_chip_folders(project_dir):
         result = match_folder_in_project(folder.name, project_name, records)
         if result:
-            record, match_type, parsed = result
+            record, match_type, parsed, designator = result
             matched.append(
                 FolderMatch(
                     folder_path=folder,
@@ -198,6 +204,7 @@ def match_project_folders(
                     record=record,
                     match_type=match_type,
                     parsed_folder_name=parsed,
+                    matched_designator=designator,
                 )
             )
         else:

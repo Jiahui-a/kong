@@ -31,10 +31,21 @@ class ChipRecord:
         """获取位号的文本表示（多位号以换行连接）。"""
         return "\n".join(self.designators_in(project_name))
 
-    @property
-    def target_name(self) -> str:
-        """公盘目标文件夹名：[型号 料号]"""
-        return f"[{self.model} {self.part_number}]"
+    def target_name(self, project_name: str = "", designator: str = "") -> str:
+        """公盘目标文件夹名，仅包含非空的型号、料号、位号。"""
+        parts: list[str] = []
+        if self.model:
+            parts.append(self.model)
+        if self.part_number:
+            parts.append(self.part_number)
+        resolved_designator = designator or (
+            self.designators_in(project_name)[0] if project_name and len(self.designators_in(project_name)) == 1 else ""
+        )
+        if resolved_designator:
+            parts.append(resolved_designator)
+        if not parts:
+            raise ValueError("目标名称至少需要一个非空字段（型号、料号或位号）")
+        return f"[{' '.join(parts)}]"
 
 
 @dataclass
@@ -147,11 +158,6 @@ def load_database(xlsx_path: Path) -> Database:
 
         if not part_number and not model:
             continue
-        if not part_number or not model:
-            raise ValueError(
-                f"第 {row_index} 行数据不完整，料号与型号均不能为空: "
-                f"料号={part_number!r}, 型号={model!r}"
-            )
 
         designators_by_project: dict[str, list[str]] = {}
         for project, col_index in zip(project_names, range(PROJECT_COL_START, len(header_row))):

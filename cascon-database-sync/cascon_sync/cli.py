@@ -151,10 +151,10 @@ def _write_json_report(report, path: Path) -> None:
                 "destination": str(action.destination),
                 "project_name": action.project_name,
                 "match_type": action.match_type,
-                "target_name": action.record.target_name,
+                "target_name": action.target_name,
                 "model": action.record.model,
                 "part_number": action.record.part_number,
-                "designator": action.record.designator_in(action.project_name),
+                "designator": action.matched_designator or action.record.designator_in(action.project_name),
                 "skipped": action.skipped,
                 "skip_reason": action.skip_reason,
                 "renamed_internals": [

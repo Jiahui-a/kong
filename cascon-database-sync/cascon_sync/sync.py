@@ -19,9 +19,14 @@ class SyncAction:
     project_name: str
     record: object
     match_type: str = ""
+    matched_designator: str = ""
     renamed_internals: list[tuple[Path, Path]] = field(default_factory=list)
     skipped: bool = False
     skip_reason: str = ""
+
+    @property
+    def target_name(self) -> str:
+        return self.record.target_name(self.project_name, self.matched_designator)  # type: ignore[union-attr]
 
 
 @dataclass
@@ -82,7 +87,7 @@ def sync_folder(
     """
     src = folder_match.folder_path
     original_name = src.name
-    new_name = folder_match.record.target_name
+    new_name = folder_match.target_name
     dest = dest_root / new_name
 
     action = SyncAction(
@@ -91,6 +96,7 @@ def sync_folder(
         project_name=folder_match.project_name,
         record=folder_match.record,
         match_type=folder_match.match_type,
+        matched_designator=folder_match.matched_designator,
     )
 
     if dest.exists():
@@ -135,7 +141,7 @@ def sync_projects(
     seen_targets: dict[str, Path] = {}
 
     for folder_match in matched:
-        target_key = folder_match.record.target_name
+        target_key = folder_match.target_name
         if target_key in seen_targets:
             report.errors.append(
                 f"重复目标名称 {target_key}: "

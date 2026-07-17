@@ -47,7 +47,7 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(database.records[0].model, "STM32F103C8T6")
         self.assertEqual(database.records[0].designators_in("ProjectA"), ["U1"])
         self.assertEqual(database.records[0].designators_in("ProjectB"), ["U5"])
-        self.assertEqual(database.records[0].target_name, "[STM32F103C8T6 C12345-001]")
+        self.assertEqual(database.records[0].target_name("ProjectA", "U1"), "[STM32F103C8T6 C12345-001 U1]")
 
     def test_parse_bracket_name(self) -> None:
         self.assertEqual(parse_chip_folder_name("[U1]"), "U1")
@@ -57,7 +57,7 @@ class CasconSyncTests(unittest.TestCase):
         database = self._load_db()
         result = match_folder_in_project("[U1]", "ProjectA", database.records)
         self.assertIsNotNone(result)
-        record, match_type, _ = result  # type: ignore[misc]
+        record, match_type, _, _ = result  # type: ignore[misc]
         self.assertEqual(record.part_number, "C12345-001")
         self.assertEqual(match_type, "designator_exact")
 
@@ -65,7 +65,7 @@ class CasconSyncTests(unittest.TestCase):
         database = self._load_db()
         result = match_folder_in_project("[STM32F103C8T6]", "ProjectA", database.records)
         self.assertIsNotNone(result)
-        record, match_type, _ = result  # type: ignore[misc]
+        record, match_type, _, _ = result  # type: ignore[misc]
         self.assertEqual(record.part_number, "C12345-001")
         self.assertEqual(match_type, "model_exact")
 
@@ -74,7 +74,7 @@ class CasconSyncTests(unittest.TestCase):
         for folder_name in ("[STM32F103C8T6 U1]", "[U1 STM32F103C8T6]", "[U1-STM32F103C8T6]"):
             result = match_folder_in_project(folder_name, "ProjectA", database.records)
             self.assertIsNotNone(result, folder_name)
-            record, _, _ = result  # type: ignore[misc]
+            record, _, _, _ = result  # type: ignore[misc]
             self.assertEqual(record.part_number, "C12345-001")
 
     def test_match_respects_project_designator(self) -> None:
@@ -83,7 +83,7 @@ class CasconSyncTests(unittest.TestCase):
         result_b = match_folder_in_project("[U5]", "ProjectB", database.records)
         self.assertIsNone(result_a)
         self.assertIsNotNone(result_b)
-        record, _, _ = result_b  # type: ignore[misc]
+        record, _, _, _ = result_b  # type: ignore[misc]
         self.assertEqual(record.part_number, "C12345-001")
 
     def test_discover_projects_from_workspace(self) -> None:
@@ -110,10 +110,10 @@ class CasconSyncTests(unittest.TestCase):
         report = sync_projects([workspace], database, output)
 
         self.assertEqual(report.copied_count, 1)
-        dest = output / "[STM32F103C8T6 C12345-001]"
+        dest = output / "[STM32F103C8T6 C12345-001 U1]"
         self.assertTrue(dest.is_dir())
-        self.assertTrue((dest / "[STM32F103C8T6 C12345-001]").is_dir())
-        self.assertTrue((dest / "[STM32F103C8T6 C12345-001].txt").is_file())
+        self.assertTrue((dest / "[STM32F103C8T6 C12345-001 U1]").is_dir())
+        self.assertTrue((dest / "[STM32F103C8T6 C12345-001 U1].txt").is_file())
         self.assertTrue((dest / "readme.txt").is_file())
 
     def test_unmatched_folder_reported(self) -> None:
@@ -144,7 +144,7 @@ class CasconSyncTests(unittest.TestCase):
         for folder in ("[U3]", "[U4]", "[U5]", "[W25Q128JVSIQ U4]"):
             result = match_folder_in_project(folder, "ProjectA", database.records)
             self.assertIsNotNone(result, folder)
-            record, _, _ = result  # type: ignore[misc]
+            record, _, _, _ = result  # type: ignore[misc]
             self.assertEqual(record.part_number, "C12345-003")
 
     def test_match_project_folders(self) -> None:
@@ -156,6 +156,61 @@ class CasconSyncTests(unittest.TestCase):
         matched, unmatched = match_project_folders(project, "ProjectA", database.records)
         self.assertEqual(len(matched), 2)
         self.assertEqual(len(unmatched), 0)
+
+    def test_empty_model_allowed(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-010", "", "U10"])
+        xlsx = self.temp_dir / "empty_model.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        record = database.records[0]
+        self.assertEqual(record.model, "")
+        self.assertEqual(record.part_number, "C12345-010")
+        self.assertEqual(record.target_name("ProjectA", "U10"), "[C12345-010 U10]")
+
+        result = match_folder_in_project("[U10]", "ProjectA", database.records)
+        self.assertIsNotNone(result)
+        record, match_type, _, designator = result  # type: ignore[misc]
+        self.assertEqual(record.part_number, "C12345-010")
+        self.assertEqual(match_type, "designator_exact")
+        self.assertEqual(designator, "U10")
+
+    def test_target_name_omits_empty_model_and_designator(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-011", "W25Q128", ""])
+        xlsx = self.temp_dir / "empty_designator.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        record = database.records[0]
+        self.assertEqual(record.target_name("ProjectA"), "[W25Q128 C12345-011]")
+
+    def test_sync_with_empty_model(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-010", "", "U10"])
+        xlsx = self.temp_dir / "empty_model.xlsx"
+        workbook.save(xlsx)
+        database = load_database(xlsx)
+
+        workspace = self.temp_dir / "cascon"
+        chip_folder = workspace / "ProjectA" / "[U10]"
+        chip_folder.mkdir(parents=True)
+        (chip_folder / "[U10].txt").write_text("data", encoding="utf-8")
+
+        output = self.temp_dir / "database"
+        report = sync_projects([workspace], database, output)
+
+        self.assertEqual(report.copied_count, 1)
+        dest = output / "[C12345-010 U10]"
+        self.assertTrue(dest.is_dir())
+        self.assertTrue((dest / "[C12345-010 U10].txt").is_file())
 
 
 if __name__ == "__main__":
