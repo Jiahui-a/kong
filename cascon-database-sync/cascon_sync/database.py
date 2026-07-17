@@ -156,7 +156,7 @@ def load_database(xlsx_path: Path) -> Database:
         part_number = _cell_text(row[PART_NUMBER_COL] if PART_NUMBER_COL < len(row) else None)
         model = _cell_text(row[MODEL_COL] if MODEL_COL < len(row) else None)
 
-        if not part_number and not model:
+        if not part_number:
             continue
 
         designators_by_project: dict[str, list[str]] = {}

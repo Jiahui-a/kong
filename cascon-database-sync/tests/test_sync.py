@@ -190,6 +190,19 @@ class CasconSyncTests(unittest.TestCase):
         record = database.records[0]
         self.assertEqual(record.target_name("ProjectA"), "[W25Q128 C12345-011]")
 
+    def test_skip_row_when_part_number_empty(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "", "STM32F103C8T6", "U1"])
+        sheet.append(["2", "C12345-020", "GD32F303", "U2"])
+        xlsx = self.temp_dir / "empty_part_number.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        self.assertEqual(len(database.records), 1)
+        self.assertEqual(database.records[0].part_number, "C12345-020")
+
     def test_sync_with_empty_model(self) -> None:
         workbook = Workbook()
         sheet = workbook.active
