@@ -52,6 +52,8 @@ class CasconSyncTests(unittest.TestCase):
     def test_parse_bracket_name(self) -> None:
         self.assertEqual(parse_chip_folder_name("[U1]"), "U1")
         self.assertEqual(parse_chip_folder_name("[STM32F103C8T6 U1]"), "STM32F103C8T6 U1")
+        self.assertEqual(parse_chip_folder_name("[Car_Interface]_02"), "Car_Interface")
+        self.assertEqual(parse_chip_folder_name("[U1]_revA"), "U1")
 
     def test_match_designator_only(self) -> None:
         database = self._load_db()
@@ -243,17 +245,68 @@ class CasconSyncTests(unittest.TestCase):
         workbook.save(xlsx)
 
         database = load_database(xlsx)
-        self.assertEqual(len(database.records), 1)
-        record = database.records[0]
-        self.assertEqual(record.part_number, "C12345-100")
-        self.assertEqual(record.model, "STM32F103C8T6")
-        self.assertEqual(record.designators_in("ProjectA"), ["U1", "U2"])
+        self.assertEqual(len(database.records), 2)
+
+        with_model = next(r for r in database.records if r.model == "STM32F103C8T6")
+        self.assertEqual(with_model.part_number, "C12345-100")
+        self.assertEqual(with_model.designators_in("ProjectA"), ["U1"])
+
+        without_model = next(r for r in database.records if r.model == "")
+        self.assertEqual(without_model.part_number, "C12345-100")
+        self.assertEqual(without_model.designators_in("ProjectA"), ["U2"])
 
         result = match_folder_in_project("[U2]", "ProjectA", database.records)
         self.assertIsNotNone(result)
         record, _, _, designator = result  # type: ignore[misc]
         self.assertEqual(record.part_number, "C12345-100")
+        self.assertEqual(record.model, "")
         self.assertEqual(designator, "U2")
+
+    def test_model_not_inherited_unless_cell_has_value(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-400", "STM32F103", "U1"])
+        sheet.append(["2", "", "", "U2"])
+        xlsx = self.temp_dir / "no_model_inherit.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        empty_model_rows = [r for r in database.records if r.designators_in("ProjectA") == ["U2"]]
+        self.assertEqual(len(empty_model_rows), 1)
+        self.assertEqual(empty_model_rows[0].model, "")
+        self.assertEqual(empty_model_rows[0].target_name("ProjectA", "U2"), "[C12345-400 U2]")
+
+    def test_match_bracket_with_suffix(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-500", "Car_Interface", "U20"])
+        xlsx = self.temp_dir / "suffix_folder.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        for folder in ("[Car_Interface]_02", "[U20]_revA", "[C12345-500]_01"):
+            result = match_folder_in_project(folder, "ProjectA", database.records)
+            self.assertIsNotNone(result, folder)
+            record, _, parsed, _ = result  # type: ignore[misc]
+            self.assertEqual(record.part_number, "C12345-500")
+            self.assertNotIn("]", parsed)
+
+    def test_match_any_single_field(self) -> None:
+        database = self._load_db()
+        # 料号单独命中
+        result = match_folder_in_project("[C12345-001]", "ProjectA", database.records)
+        self.assertIsNotNone(result)
+        record, match_type, _, _ = result  # type: ignore[misc]
+        self.assertEqual(record.part_number, "C12345-001")
+        self.assertEqual(match_type, "part_number_exact")
+
+        # 位号单独命中（带后缀）
+        result = match_folder_in_project("[U1]_02", "ProjectA", database.records)
+        self.assertIsNotNone(result)
+        record, match_type, _, _ = result  # type: ignore[misc]
+        self.assertEqual(match_type, "designator_exact")
 
     def test_resolve_inherited_value(self) -> None:
         self.assertEqual(resolve_inherited_value("C001", ""), ("C001", "C001"))

@@ -233,15 +233,16 @@ def load_database(xlsx_path: Path) -> Database:
   列规则（首行为表头）：
   - 第 1 列：可选序号
   - 第 2 列：料号（可为空；为空时向上继承最近非空料号）
-  - 第 3 列：型号（可为空；为空时向上继承最近非空型号）
+  - 第 3 列：型号（可为空；仅当前单元格有值时使用，不向上继承；合并单元格展开后算有值）
   - 第 4 列起：项目名（表头），单元格值为该料号在该项目中的位号
 
   行规则：
   - 仅当所有项目列均为空时才跳过该行
   - 料号为空但项目列有位号时保留该行，并向上查找最近非空料号
+  - 型号为空则保持为空，除非当前单元格（含合并单元格）有值
   - 同一料号+型号的多行位号会合并到一条记录
   - 同一项目列单元格内多位号可用顿号（、）、换行、逗号、分号等分隔
-  - 料号/型号列的 Excel 合并单元格会自动展开后再继承
+  - 料号/型号列的 Excel 合并单元格会自动展开后再读取
     """
     if not xlsx_path.is_file():
         raise FileNotFoundError(f"找不到 database 文件: {xlsx_path}")
@@ -272,16 +273,15 @@ def load_database(xlsx_path: Path) -> Database:
 
     records_map: dict[tuple[str, str], ChipRecord] = {}
     last_part_number = ""
-    last_model = ""
 
     for row_index, row in enumerate(rows[1:], start=2):
         if row is None:
             continue
 
         raw_part_number = _cell_text(row[PART_NUMBER_COL] if PART_NUMBER_COL < len(row) else None)
-        raw_model = _cell_text(row[MODEL_COL] if MODEL_COL < len(row) else None)
+        # 型号不向上继承：单元格为空则型号为空；合并单元格展开后若有值则使用该值
+        model = _cell_text(row[MODEL_COL] if MODEL_COL < len(row) else None)
         part_number, last_part_number = resolve_inherited_value(raw_part_number, last_part_number)
-        model, last_model = resolve_inherited_value(raw_model, last_model)
 
         designators_by_project: dict[str, list[str]] = {}
         for project, col_index in project_columns:

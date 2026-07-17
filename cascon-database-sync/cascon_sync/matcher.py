@@ -11,10 +11,12 @@ from .database import ChipRecord, Database, normalize_project_name, resolve_proj
 # 匹配优先级（数值越小越优先）
 _PRIORITY = {
     "designator_exact": 10,
-    "model_designator_exact": 20,
-    "designator_model_exact": 20,
-    "token_set": 30,
-    "model_exact": 40,
+    "part_number_exact": 15,
+    "model_exact": 20,
+    "model_designator_exact": 30,
+    "designator_model_exact": 30,
+    "token_set": 40,
+    "partial_field": 50,
 }
 
 
@@ -36,9 +38,12 @@ class FolderMatch:
 
 
 def parse_chip_folder_name(folder_name: str) -> str:
-    """解析芯片测试文件夹名，去掉外层 []。"""
+    """解析芯片测试文件夹名，提取 [] 内的内容。
+
+    支持 [] 后还有后缀的命名，例如 ``[Car_Interface]_02`` → ``Car_Interface``。
+    """
     name = folder_name.strip()
-    bracket_match = re.fullmatch(r"\[(.*)\]", name, flags=re.DOTALL)
+    bracket_match = re.search(r"\[(.*?)\]", name, flags=re.DOTALL)
     if bracket_match:
         return bracket_match.group(1).strip()
     return name
@@ -54,23 +59,77 @@ def _tokenize(value: str) -> frozenset[str]:
     return frozenset(tokens)
 
 
-def _build_variants(model: str, designator: str) -> list[tuple[str, str]]:
-    """生成可用于比对的命名变体。"""
-    variants: list[tuple[str, str]] = []
-    if designator:
-        variants.append((designator, "designator_exact"))
-    if model:
-        variants.append((model, "model_exact"))
-    if model and designator:
-        variants.extend(
-            [
-                (f"{model} {designator}", "model_designator_exact"),
-                (f"{designator} {model}", "designator_model_exact"),
-                (f"{model}_{designator}", "model_designator_exact"),
-                (f"{designator}_{model}", "designator_model_exact"),
-            ]
+def _default_designator(designators: list[str]) -> str:
+    if len(designators) == 1:
+        return designators[0]
+    return ""
+
+
+def _build_field_terms(
+    record: ChipRecord,
+    project_name: str,
+) -> list[tuple[str, str, str]]:
+    """生成可单独匹配的字段项：(比对文本, 匹配类型, 关联位号)。"""
+    designators = record.designators_in(project_name)
+    if not designators:
+        return []
+
+    terms: list[tuple[str, str, str]] = []
+    for designator in designators:
+        terms.append((designator, "designator_exact", designator))
+
+    if record.part_number:
+        terms.append(
+            (record.part_number, "part_number_exact", _default_designator(designators))
         )
-    return variants
+
+    if record.model:
+        terms.append((record.model, "model_exact", _default_designator(designators)))
+
+    if record.model:
+        for designator in designators:
+            terms.extend(
+                [
+                    (f"{record.model} {designator}", "model_designator_exact", designator),
+                    (f"{designator} {record.model}", "designator_model_exact", designator),
+                    (f"{record.model}_{designator}", "model_designator_exact", designator),
+                    (f"{designator}_{record.model}", "designator_model_exact", designator),
+                ]
+            )
+
+    if record.part_number:
+        for designator in designators:
+            terms.extend(
+                [
+                    (f"{record.part_number} {designator}", "token_set", designator),
+                    (f"{designator} {record.part_number}", "token_set", designator),
+                ]
+            )
+
+    return terms
+
+
+def _field_matches_folder(field: str, parsed: str, parsed_norm: str, parsed_tokens: frozenset[str]) -> bool:
+    """字段与文件夹名是否匹配：整名相等，或任一令牌命中即可。"""
+    if not field:
+        return False
+
+    field_norm = _normalize_text(field)
+    if not field_norm:
+        return False
+
+    if field_norm == parsed_norm:
+        return True
+
+    if field_norm in parsed_tokens:
+        return True
+
+    # 文件夹令牌中只要有一个字段命中也算匹配
+    field_tokens = _tokenize(field)
+    if field_tokens and field_tokens.issubset(parsed_tokens):
+        return True
+
+    return False
 
 
 def match_folder_in_project(
@@ -80,17 +139,14 @@ def match_folder_in_project(
 ) -> tuple[ChipRecord, str, str, str] | None:
     """在指定项目上下文中，将文件夹名匹配到 database 记录。
 
-  查找规则（按优先级）：
-
-  1. **位号精确匹配**：文件夹为 `[U1]` 等形式，内容与该项目列中的位号一致
-  2. **型号+位号组合匹配**：文件夹为 `[型号 位号]`、`[位号 型号]` 等混合形式
-  3. **令牌集合匹配**：组合名分隔符不同但令牌集合相同（如 `[U1-STM32]`）
-  4. **型号精确匹配**：文件夹仅为 `[型号]`，且该料号在本项目有位号
+  查找规则：
+  - 文件夹名中只要有一个内容与料号、位号或型号匹配即可
+  - 支持 ``[名称]_后缀`` 形式，只取 [] 内内容参与匹配
+  - 组合名（型号+位号等）仍可匹配，优先级低于单字段命中
 
   约束：
   - 仅在 database 该项目列有位号的记录中查找
-  - 项目列单元格内换行填写多个位号时，逐一参与匹配
-  - 所有比对前会去掉文件夹名外层 `[]` 并忽略大小写、空格、`_`、`-` 差异
+  - 忽略大小写、空格、`_`、`-` 差异
     """
     parsed = parse_chip_folder_name(folder_name)
     if not parsed:
@@ -106,17 +162,26 @@ def match_folder_in_project(
         if not designators:
             continue
 
-        for designator in designators:
-            for variant, match_type in _build_variants(record.model, designator):
-                if _normalize_text(variant) == parsed_norm:
-                    candidates.append((record, match_type, _PRIORITY[match_type], designator))
-                    break
-                elif len(parsed_tokens) >= 2 and _tokenize(variant) == parsed_tokens:
-                    candidates.append((record, "token_set", _PRIORITY["token_set"], designator))
-                    break
-            else:
-                continue
-            break
+        matched_for_record = False
+        for term, match_type, designator in _build_field_terms(record, project_name):
+            if _field_matches_folder(term, parsed, parsed_norm, parsed_tokens):
+                priority = _PRIORITY[match_type]
+                # 单字段命中时，用 partial_field 区分「整名相等」与「部分令牌命中」
+                if match_type in {"designator_exact", "part_number_exact", "model_exact"}:
+                    if _normalize_text(term) != parsed_norm and _normalize_text(term) in parsed_tokens:
+                        match_type = "partial_field"
+                        priority = _PRIORITY["partial_field"]
+                candidates.append((record, match_type, priority, designator))
+                matched_for_record = True
+                break
+
+            if len(parsed_tokens) >= 2 and _tokenize(term) == parsed_tokens:
+                candidates.append((record, "token_set", _PRIORITY["token_set"], designator))
+                matched_for_record = True
+                break
+
+        if matched_for_record:
+            continue
 
     if not candidates:
         return None
