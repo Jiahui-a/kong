@@ -7,7 +7,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from cascon_sync.database import load_database, parse_designators
+from cascon_sync.database import load_database, parse_designators, resolve_inherited_value
 from cascon_sync.matcher import (
     discover_project_dirs,
     match_all_sources,
@@ -179,22 +179,29 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(designator, "U10")
 
     def test_target_name_omits_empty_model_and_designator(self) -> None:
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.append(["序号", "料号", "型号", "ProjectA"])
-        sheet.append(["1", "C12345-011", "W25Q128", ""])
-        xlsx = self.temp_dir / "empty_designator.xlsx"
-        workbook.save(xlsx)
+        from cascon_sync.database import ChipRecord
 
-        database = load_database(xlsx)
-        record = database.records[0]
+        record = ChipRecord(
+            part_number="C12345-011",
+            model="W25Q128",
+            designators_by_project={},
+            row_index=2,
+        )
         self.assertEqual(record.target_name("ProjectA"), "[W25Q128 C12345-011]")
 
-    def test_skip_row_when_part_number_empty(self) -> None:
+        record_no_model = ChipRecord(
+            part_number="C12345-010",
+            model="",
+            designators_by_project={"ProjectA": ["U10"]},
+            row_index=3,
+        )
+        self.assertEqual(record_no_model.target_name("ProjectA", "U10"), "[C12345-010 U10]")
+
+    def test_skip_row_when_all_project_columns_empty(self) -> None:
         workbook = Workbook()
         sheet = workbook.active
         sheet.append(["序号", "料号", "型号", "ProjectA"])
-        sheet.append(["1", "", "STM32F103C8T6", "U1"])
+        sheet.append(["1", "", "STM32F103C8T6", ""])
         sheet.append(["2", "C12345-020", "GD32F303", "U2"])
         xlsx = self.temp_dir / "empty_part_number.xlsx"
         workbook.save(xlsx)
@@ -202,6 +209,55 @@ class CasconSyncTests(unittest.TestCase):
         database = load_database(xlsx)
         self.assertEqual(len(database.records), 1)
         self.assertEqual(database.records[0].part_number, "C12345-020")
+
+    def test_row_with_empty_part_number_kept_when_project_has_value(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "", "STM32F103C8T6", "U1"])
+        sheet.append(["2", "C12345-020", "GD32F303", "U2"])
+        xlsx = self.temp_dir / "empty_part_with_project.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        self.assertEqual(len(database.records), 2)
+
+        model_only = next(record for record in database.records if record.model == "STM32F103C8T6")
+        self.assertEqual(model_only.part_number, "")
+        self.assertEqual(model_only.designators_in("ProjectA"), ["U1"])
+
+        result = match_folder_in_project("[U1]", "ProjectA", database.records)
+        self.assertIsNotNone(result)
+        record, match_type, _, _ = result  # type: ignore[misc]
+        self.assertEqual(record.model, "STM32F103C8T6")
+        self.assertEqual(match_type, "designator_exact")
+
+    def test_inherit_part_number_from_row_above(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-100", "STM32F103C8T6", "U1"])
+        sheet.append(["2", "", "", "U2"])
+        xlsx = self.temp_dir / "inherit_part_number.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        self.assertEqual(len(database.records), 1)
+        record = database.records[0]
+        self.assertEqual(record.part_number, "C12345-100")
+        self.assertEqual(record.model, "STM32F103C8T6")
+        self.assertEqual(record.designators_in("ProjectA"), ["U1", "U2"])
+
+        result = match_folder_in_project("[U2]", "ProjectA", database.records)
+        self.assertIsNotNone(result)
+        record, _, _, designator = result  # type: ignore[misc]
+        self.assertEqual(record.part_number, "C12345-100")
+        self.assertEqual(designator, "U2")
+
+    def test_resolve_inherited_value(self) -> None:
+        self.assertEqual(resolve_inherited_value("C001", ""), ("C001", "C001"))
+        self.assertEqual(resolve_inherited_value("", "C001"), ("C001", "C001"))
+        self.assertEqual(resolve_inherited_value("", ""), ("", ""))
 
     def test_sync_with_empty_model(self) -> None:
         workbook = Workbook()

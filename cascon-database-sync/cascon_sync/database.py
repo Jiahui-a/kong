@@ -108,14 +108,76 @@ def resolve_project_name(folder_name: str, known_projects: list[str]) -> str | N
     return None
 
 
+def _merge_designator_lists(existing: list[str], new: list[str]) -> list[str]:
+    """合并位号列表，保持顺序并去重。"""
+    seen = {designator.casefold() for designator in existing}
+    merged = list(existing)
+    for designator in new:
+        key = designator.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(designator)
+    return merged
+
+
+def resolve_inherited_value(raw_value: str, last_non_empty: str) -> tuple[str, str]:
+    """解析可继承字段：当前行非空则使用当前值，否则沿用上方最近非空值。
+
+    返回 (解析后的值, 更新后的最近非空值)。
+    """
+    if raw_value:
+        return raw_value, raw_value
+    return last_non_empty, last_non_empty
+
+
+def _merge_into_records(
+    records_map: dict[tuple[str, str], ChipRecord],
+    part_number: str,
+    model: str,
+    designators_by_project: dict[str, list[str]],
+    row_index: int,
+) -> None:
+    """将一行项目位号合并到 records_map 中。"""
+    key = (part_number, model)
+    if key not in records_map:
+        records_map[key] = ChipRecord(
+            part_number=part_number,
+            model=model,
+            designators_by_project=designators_by_project,
+            row_index=row_index,
+        )
+        return
+
+    existing = records_map[key]
+    merged_projects = dict(existing.designators_by_project)
+    for project, designators in designators_by_project.items():
+        if project in merged_projects:
+            merged_projects[project] = _merge_designator_lists(merged_projects[project], designators)
+        else:
+            merged_projects[project] = list(designators)
+
+    records_map[key] = ChipRecord(
+        part_number=part_number,
+        model=model,
+        designators_by_project=merged_projects,
+        row_index=existing.row_index,
+    )
+
+
 def load_database(xlsx_path: Path) -> Database:
     """从 Excel 加载芯片映射表。
 
   列规则（首行为表头）：
   - 第 1 列：可选序号
-  - 第 2 列：料号
-  - 第 3 列：型号
+  - 第 2 列：料号（可为空；为空时向上继承最近非空料号）
+  - 第 3 列：型号（可为空；为空时向上继承最近非空型号）
   - 第 4 列起：项目名（表头），单元格值为该料号在该项目中的位号
+
+  行规则：
+  - 仅当所有项目列均为空时才跳过该行
+  - 料号为空但项目列有位号时保留该行，并向上查找最近非空料号
+  - 同一料号+型号的多行位号会合并到一条记录
     同一单元格内多位号可用换行、逗号、分号等分隔
     """
     if not xlsx_path.is_file():
@@ -148,16 +210,18 @@ def load_database(xlsx_path: Path) -> Database:
             f"当前表头: {list(header_row)}"
         )
 
-    records: list[ChipRecord] = []
+    records_map: dict[tuple[str, str], ChipRecord] = {}
+    last_part_number = ""
+    last_model = ""
+
     for row_index, row in enumerate(rows[1:], start=2):
         if row is None:
             continue
 
-        part_number = _cell_text(row[PART_NUMBER_COL] if PART_NUMBER_COL < len(row) else None)
-        model = _cell_text(row[MODEL_COL] if MODEL_COL < len(row) else None)
-
-        if not part_number:
-            continue
+        raw_part_number = _cell_text(row[PART_NUMBER_COL] if PART_NUMBER_COL < len(row) else None)
+        raw_model = _cell_text(row[MODEL_COL] if MODEL_COL < len(row) else None)
+        part_number, last_part_number = resolve_inherited_value(raw_part_number, last_part_number)
+        model, last_model = resolve_inherited_value(raw_model, last_model)
 
         designators_by_project: dict[str, list[str]] = {}
         for project, col_index in zip(project_names, range(PROJECT_COL_START, len(header_row))):
@@ -165,16 +229,19 @@ def load_database(xlsx_path: Path) -> Database:
             if designators:
                 designators_by_project[project] = designators
 
-        records.append(
-            ChipRecord(
-                part_number=part_number,
-                model=model,
-                designators_by_project=designators_by_project,
-                row_index=row_index,
-            )
+        if not designators_by_project:
+            continue
+
+        _merge_into_records(
+            records_map,
+            part_number,
+            model,
+            designators_by_project,
+            row_index,
         )
 
-    if not records:
+    if not records_map:
         raise ValueError(f"database.xlsx 中没有有效数据行: {xlsx_path}")
 
+    records = sorted(records_map.values(), key=lambda record: record.row_index)
     return Database(records=records, project_names=project_names)
