@@ -82,7 +82,7 @@ U1、U2、U3
 
 - 只在 database 中**该项目列有位号**的记录里查找
 - 若同一规则匹配到多条记录，视为歧义，不自动同步（报告错误）
-- 公盘目标名由非空的**型号、料号、位号**组成，如 `[STM32F103C8T6 C12345-001 U1]`；型号或位号为空时自动省略
+- 公盘目标名由非空的**料号、型号**组成，格式为 `[料号_型号]`，如 `[C12345-001_STM32F103C8T6]`；仅有一项时省略另一项，**不含位号**
 
 ## 安装
 
@@ -114,6 +114,32 @@ python -m cascon_sync \
   -o "Z:\database"
 ```
 
+## 打包成 exe（Windows）
+
+在 **Windows** 电脑上执行（PyInstaller 只能打包当前系统可运行的程序）：
+
+```bat
+cd cascon-database-sync
+scripts\build_exe.bat
+```
+
+或手动执行：
+
+```bat
+pip install -r requirements-build.txt
+python -m PyInstaller cascon-sync.spec --noconfirm
+```
+
+完成后得到 `dist\cascon-sync.exe`，可直接分发给同事使用，无需安装 Python。
+
+```bat
+# 预览
+dist\cascon-sync.exe -d database.xlsx -s "D:\Cascon" -o "Z:\database" --dry-run
+
+# 正式同步
+dist\cascon-sync.exe -d database.xlsx -s "D:\Cascon" -o "Z:\database"
+```
+
 ## 重命名示例
 
 **本地（不变）：**
@@ -127,9 +153,9 @@ D:\Cascon\ProjectA\[U1]\
 **公盘（重命名）：**
 
 ```text
-Z:\database\[STM32F103C8T6 C12345-001 U1]\
-  [STM32F103C8T6 C12345-001 U1]\
-  [STM32F103C8T6 C12345-001 U1].xlsx
+Z:\database\[C12345-001_STM32F103C8T6]\
+  [C12345-001_STM32F103C8T6]\
+  [C12345-001_STM32F103C8T6].xlsx
 ```
 
 ## 项目结构
@@ -140,6 +166,10 @@ cascon-database-sync/
 │   ├── database.py     # 读取 database.xlsx（第2列料号、第3列型号、项目列位号）
 │   ├── matcher.py      # 项目上下文下的文件夹匹配规则
 │   └── sync.py         # 复制到公盘并重命名
+├── scripts/
+│   └── build_exe.bat   # Windows 一键打包脚本
+├── cascon-sync.spec    # PyInstaller 配置
+├── run.py              # exe 入口
 ├── templates/
 ├── tests/
 └── README.md

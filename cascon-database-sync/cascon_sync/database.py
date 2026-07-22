@@ -32,20 +32,16 @@ class ChipRecord:
         return "\n".join(self.designators_in(project_name))
 
     def target_name(self, project_name: str = "", designator: str = "") -> str:
-        """公盘目标文件夹名，仅包含非空的型号、料号、位号。"""
+        """公盘目标文件夹名，由非空的料号与型号组成（格式：料号_型号，不含位号）。"""
+        del project_name, designator  # 保留参数以兼容既有调用方
         parts: list[str] = []
-        if self.model:
-            parts.append(self.model)
         if self.part_number:
             parts.append(self.part_number)
-        resolved_designator = designator or (
-            self.designators_in(project_name)[0] if project_name and len(self.designators_in(project_name)) == 1 else ""
-        )
-        if resolved_designator:
-            parts.append(resolved_designator)
+        if self.model:
+            parts.append(self.model)
         if not parts:
-            raise ValueError("目标名称至少需要一个非空字段（型号、料号或位号）")
-        return f"[{' '.join(parts)}]"
+            raise ValueError("目标名称至少需要一个非空字段（料号或型号）")
+        return f"[{'_'.join(parts)}]"
 
 
 @dataclass

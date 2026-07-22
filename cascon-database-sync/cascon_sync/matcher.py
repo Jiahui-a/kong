@@ -33,7 +33,7 @@ class FolderMatch:
 
     @property
     def target_name(self) -> str:
-        """公盘目标文件夹名（按匹配到的位号生成）。"""
+        """公盘目标文件夹名（料号_型号，不含位号）。"""
         return self.record.target_name(self.project_name, self.matched_designator)
 
 
