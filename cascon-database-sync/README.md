@@ -114,7 +114,7 @@ python -m cascon_sync
 
 ### 打包 Windows exe
 
-在 **Windows** 电脑上执行：
+在 **Windows** 电脑上，进入 `cascon-database-sync` 目录执行：
 
 ```bash
 pip install -r requirements.txt
@@ -125,10 +125,12 @@ python scripts/build_exe.py
 或：
 
 ```bash
-pyinstaller CasconSync.spec
+pyinstaller --noconfirm --clean CasconSync.spec
 ```
 
 生成 `dist/CasconSync.exe`。双击即可弹出操作界面，无需安装 Python。
+
+注意：请在项目目录下打包；`CasconSync.spec` 使用相对路径，不要提交被 PyInstaller 回写成绝对路径的版本。
 
 ### 命令行
 

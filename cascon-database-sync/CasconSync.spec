@@ -1,28 +1,40 @@
 # -*- mode: python ; coding: utf-8 -*-
+"""PyInstaller 规格文件：生成无控制台窗口的 CasconSync.exe。
 
+路径一律相对本 spec 所在目录，避免写死某台机器的绝对路径。
+"""
 
-a = Analysis(
-    ['/workspace/cascon-database-sync/cascon_sync/gui.py'],
-    pathex=[],
+import os
+
+from PyInstaller.utils.hooks import collect_submodules
+
+# SPECPATH 由 PyInstaller 注入，指向本 .spec 所在目录
+spec_dir = SPECPATH  # noqa: F821
+entry_script = os.path.join(spec_dir, "cascon_sync", "gui.py")
+
+hiddenimports = collect_submodules("cascon_sync") + collect_submodules("openpyxl")
+
+a = Analysis(  # noqa: F821
+    [entry_script],
+    pathex=[spec_dir],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
-    optimize=0,
 )
-pyz = PYZ(a.pure)
+pyz = PYZ(a.pure)  # noqa: F821
 
-exe = EXE(
+exe = EXE(  # noqa: F821
     pyz,
     a.scripts,
     a.binaries,
     a.datas,
     [],
-    name='CasconSync',
+    name="CasconSync",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
