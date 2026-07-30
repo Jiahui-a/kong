@@ -2,6 +2,7 @@
 """PyInstaller 规格文件：生成无控制台窗口的 CasconSync.exe。
 
 路径一律相对本 spec 所在目录，避免写死某台机器的绝对路径。
+入口使用 run_gui.py（绝对导入），不要直接打包 cascon_sync/gui.py。
 """
 
 import os
@@ -10,7 +11,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 # SPECPATH 由 PyInstaller 注入，指向本 .spec 所在目录
 spec_dir = SPECPATH  # noqa: F821
-entry_script = os.path.join(spec_dir, "cascon_sync", "gui.py")
+entry_script = os.path.join(spec_dir, "run_gui.py")
 
 hiddenimports = collect_submodules("cascon_sync") + collect_submodules("openpyxl")
 

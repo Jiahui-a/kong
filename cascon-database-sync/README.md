@@ -130,7 +130,7 @@ pyinstaller --noconfirm --clean CasconSync.spec
 
 生成 `dist/CasconSync.exe`。双击即可弹出操作界面，无需安装 Python。
 
-注意：请在项目目录下打包；`CasconSync.spec` 使用相对路径，不要提交被 PyInstaller 回写成绝对路径的版本。
+注意：请在项目目录下打包；入口为 `run_gui.py`（不要直接打包 `cascon_sync/gui.py`，否则相对导入会报错）。
 
 ### 命令行
 

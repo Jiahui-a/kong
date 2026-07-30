@@ -279,7 +279,7 @@ def run_app(root_factory: Callable[[], tk.Tk] | None = None) -> int:
 
 
 def main() -> int:
-    """GUI 入口。"""
+    """GUI 入口（建议通过 run_gui.py 或 python -m cascon_sync 启动）。"""
     return run_app()
 
 

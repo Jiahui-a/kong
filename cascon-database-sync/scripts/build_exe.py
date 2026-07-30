@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "CasconSync.spec"
-ENTRY = ROOT / "cascon_sync" / "gui.py"
+ENTRY = ROOT / "run_gui.py"
 DIST_NAME = "CasconSync"
 
 
