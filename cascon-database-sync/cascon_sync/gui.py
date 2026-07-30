@@ -58,10 +58,13 @@ class CasconSyncApp:
         self.json_report_var = tk.StringVar()
         self.dry_run_var = tk.BooleanVar(value=True)
         self.overwrite_var = tk.BooleanVar(value=False)
-        self.status_var = tk.StringVar(value="请选择输入路径后开始同步")
+        self.status_var = tk.StringVar(value="当前为预览模式：不会实际复制文件")
+        self._last_dry_run = True
 
         self._busy = False
         self._build_ui()
+        self._refresh_run_button_text()
+        self.dry_run_var.trace_add("write", lambda *_: self._refresh_run_button_text())
 
     def _build_ui(self) -> None:
         pad = {"padx": 12, "pady": 6}
@@ -122,13 +125,18 @@ class CasconSyncApp:
         # options
         options = ttk.Frame(form)
         options.pack(fill=tk.X, **pad)
-        ttk.Checkbutton(options, text="预览模式（不实际复制）", variable=self.dry_run_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            options,
+            text="预览模式（勾选时只预览，不复制文件）",
+            variable=self.dry_run_var,
+            command=self._refresh_run_button_text,
+        ).pack(side=tk.LEFT)
         ttk.Checkbutton(options, text="目标已存在时覆盖", variable=self.overwrite_var).pack(side=tk.LEFT, padx=16)
 
         # actions
         actions = ttk.Frame(form)
         actions.pack(fill=tk.X, **pad)
-        self.run_button = ttk.Button(actions, text="开始同步", command=self._on_run)
+        self.run_button = ttk.Button(actions, text="开始预览", command=self._on_run)
         self.run_button.pack(side=tk.LEFT)
         ttk.Button(actions, text="清空日志", command=self._clear_log).pack(side=tk.LEFT, padx=8)
         ttk.Label(actions, textvariable=self.status_var).pack(side=tk.LEFT, padx=12)
@@ -141,6 +149,16 @@ class CasconSyncApp:
         log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.configure(yscrollcommand=log_scroll.set)
+
+    def _refresh_run_button_text(self) -> None:
+        if self.dry_run_var.get():
+            self.run_button.configure(text="开始预览")
+            if not self._busy:
+                self.status_var.set("当前为预览模式：不会实际复制文件")
+        else:
+            self.run_button.configure(text="开始正式复制")
+            if not self._busy:
+                self.status_var.set("当前为正式复制：将写入公盘输出目录")
 
     def _browse_database(self) -> None:
         path = filedialog.askopenfilename(
@@ -195,7 +213,10 @@ class CasconSyncApp:
         self._busy = busy
         state = tk.DISABLED if busy else tk.NORMAL
         self.run_button.configure(state=state)
-        self.status_var.set("正在同步…" if busy else "就绪")
+        if busy:
+            self.status_var.set("正在预览…" if self._last_dry_run else "正在正式复制…")
+        else:
+            self._refresh_run_button_text()
 
     def _on_run(self) -> None:
         if self._busy:
@@ -213,18 +234,22 @@ class CasconSyncApp:
         dry_run = bool(self.dry_run_var.get())
         overwrite = bool(self.overwrite_var.get())
         json_report = self.json_report_var.get().strip()
+        self._last_dry_run = dry_run
 
-        if not dry_run:
+        if dry_run:
+            self._append_log("提示: 预览模式开启，本次不会复制任何文件。")
+        else:
             confirmed = messagebox.askyesno(
-                "确认正式同步",
-                "当前未勾选预览模式，将实际复制文件到公盘输出目录。\n是否继续？",
+                "确认正式复制",
+                "将实际复制文件到公盘输出目录。\n\n"
+                f"输出目录:\n{output}\n\n是否继续？",
             )
             if not confirmed:
                 return
 
         self._set_busy(True)
         self._append_log("-" * 60)
-        mode = "预览" if dry_run else "正式同步"
+        mode = "预览（不复制）" if dry_run else "正式复制"
         self._append_log(f"开始{mode}…")
         self._append_log(f"database: {database}")
         for source in source_paths:
@@ -242,16 +267,24 @@ class CasconSyncApp:
                     overwrite=overwrite,
                 )
                 text = format_report(report)
+                if dry_run:
+                    text = "【预览模式】未实际复制任何文件。\n" + text
                 if json_report:
                     _write_json_report(report, Path(json_report))
                     text += f"\nJSON 报告已写入: {json_report}"
-                self.root.after(0, lambda t=text, r=report: self._on_done(t, r, None))
+                self.root.after(0, lambda t=text, r=report, d=dry_run: self._on_done(t, r, None, d))
             except Exception as exc:  # noqa: BLE001 - surface any sync failure in UI
-                self.root.after(0, lambda e=exc: self._on_done("", None, e))
+                self.root.after(0, lambda e=exc: self._on_done("", None, e, dry_run))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_done(self, report_text: str, report, error: BaseException | None) -> None:
+    def _on_done(
+        self,
+        report_text: str,
+        report,
+        error: BaseException | None,
+        dry_run: bool = False,
+    ) -> None:
         self._set_busy(False)
         if error is not None:
             self.status_var.set("同步失败")
@@ -261,18 +294,34 @@ class CasconSyncApp:
 
         self._append_log(report_text)
         errors = list(getattr(report, "errors", []) or [])
-        if not errors:
-            self.status_var.set("同步完成")
-            messagebox.showinfo("完成", "同步已完成，详情见运行日志。")
+        copied = int(getattr(report, "copied_count", 0) or 0)
+
+        if dry_run:
+            self.status_var.set("预览完成（未复制文件）")
+            tip = (
+                f"预览完成：匹配到 {copied} 项，但未复制任何文件。\n\n"
+                "若要实际写入公盘，请取消勾选「预览模式」，再点「开始正式复制」。"
+            )
+            if errors:
+                preview = "\n".join(f"• {item}" for item in errors[:8])
+                tip += f"\n\n另有 {len(errors)} 个问题：\n{preview}"
+                messagebox.showwarning("预览完成（有问题）", tip)
+            else:
+                messagebox.showinfo("预览完成", tip)
             return
 
-        self.status_var.set("同步完成（有错误）")
+        if not errors:
+            self.status_var.set(f"正式复制完成（{copied} 项）")
+            messagebox.showinfo("复制完成", f"已实际复制 {copied} 项到公盘输出目录。\n详情见运行日志。")
+            return
+
+        self.status_var.set("正式复制完成（有错误）")
         preview = "\n".join(f"• {item}" for item in errors[:8])
         if len(errors) > 8:
             preview += f"\n… 另有 {len(errors) - 8} 条，详见运行日志"
         messagebox.showwarning(
-            "完成（有错误）",
-            f"同步结束，共 {len(errors)} 个错误：\n\n{preview}",
+            "复制完成（有错误）",
+            f"已处理完成，共 {len(errors)} 个错误：\n\n{preview}",
         )
 
 
