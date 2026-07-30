@@ -435,6 +435,29 @@ class CasconSyncTests(unittest.TestCase):
         missing = self.temp_dir / "missing.xlsx"
         self.assertTrue(any("找不到 database" in msg for msg in validate_sync_inputs(missing, [source], output)))
 
+    def test_duplicate_target_name_skipped_not_error(self) -> None:
+        """同一 [料号_型号] 被多个源命中时，保留首次并跳过其余，不记为错误。"""
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA", "ProjectB"])
+        sheet.append(["1", "C12345-001", "STM32F103C8T6", "U1", "U5"])
+        xlsx = self.temp_dir / "dup_target.xlsx"
+        workbook.save(xlsx)
+        database = load_database(xlsx)
+
+        workspace = self.temp_dir / "cascon"
+        (workspace / "ProjectA" / "[U1]").mkdir(parents=True)
+        (workspace / "ProjectB" / "[U5]").mkdir(parents=True)
+
+        output = self.temp_dir / "database"
+        report = sync_projects([workspace], database, output, dry_run=True)
+
+        self.assertEqual(report.copied_count, 1)
+        self.assertEqual(report.skipped_count, 1)
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any("已由" in warning for warning in report.warnings))
+        self.assertTrue((output / "[C12345-001_STM32F103C8T6]").exists() is False)  # dry-run
+
     def test_format_report_contains_summary(self) -> None:
         report = SyncReport(
             actions=[

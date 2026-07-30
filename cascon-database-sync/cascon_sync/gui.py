@@ -245,14 +245,13 @@ class CasconSyncApp:
                 if json_report:
                     _write_json_report(report, Path(json_report))
                     text += f"\nJSON 报告已写入: {json_report}"
-                exit_code = 1 if report.errors else 0
-                self.root.after(0, lambda: self._on_done(text, exit_code, None))
+                self.root.after(0, lambda t=text, r=report: self._on_done(t, r, None))
             except Exception as exc:  # noqa: BLE001 - surface any sync failure in UI
-                self.root.after(0, lambda: self._on_done("", 1, exc))
+                self.root.after(0, lambda e=exc: self._on_done("", None, e))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_done(self, report_text: str, exit_code: int, error: BaseException | None) -> None:
+    def _on_done(self, report_text: str, report, error: BaseException | None) -> None:
         self._set_busy(False)
         if error is not None:
             self.status_var.set("同步失败")
@@ -261,12 +260,20 @@ class CasconSyncApp:
             return
 
         self._append_log(report_text)
-        if exit_code == 0:
+        errors = list(getattr(report, "errors", []) or [])
+        if not errors:
             self.status_var.set("同步完成")
             messagebox.showinfo("完成", "同步已完成，详情见运行日志。")
-        else:
-            self.status_var.set("同步完成（有错误）")
-            messagebox.showwarning("完成（有错误）", "同步结束但存在错误，请查看运行日志。")
+            return
+
+        self.status_var.set("同步完成（有错误）")
+        preview = "\n".join(f"• {item}" for item in errors[:8])
+        if len(errors) > 8:
+            preview += f"\n… 另有 {len(errors) - 8} 条，详见运行日志"
+        messagebox.showwarning(
+            "完成（有错误）",
+            f"同步结束，共 {len(errors)} 个错误：\n\n{preview}",
+        )
 
 
 def run_app(root_factory: Callable[[], tk.Tk] | None = None) -> int:
