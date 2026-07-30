@@ -7,7 +7,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from cascon_sync.database import load_database, parse_designators, resolve_inherited_value
+from cascon_sync.database import load_database, parse_designators
 from cascon_sync.matcher import (
     discover_project_dirs,
     match_all_sources,
@@ -235,13 +235,13 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(record.model, "STM32F103C8T6")
         self.assertEqual(match_type, "designator_exact")
 
-    def test_inherit_part_number_from_row_above(self) -> None:
+    def test_empty_part_number_not_inherited_from_row_above(self) -> None:
         workbook = Workbook()
         sheet = workbook.active
         sheet.append(["序号", "料号", "型号", "ProjectA"])
         sheet.append(["1", "C12345-100", "STM32F103C8T6", "U1"])
         sheet.append(["2", "", "", "U2"])
-        xlsx = self.temp_dir / "inherit_part_number.xlsx"
+        xlsx = self.temp_dir / "no_inherit_part_number.xlsx"
         workbook.save(xlsx)
 
         database = load_database(xlsx)
@@ -251,14 +251,15 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(with_model.part_number, "C12345-100")
         self.assertEqual(with_model.designators_in("ProjectA"), ["U1"])
 
-        without_model = next(r for r in database.records if r.model == "")
-        self.assertEqual(without_model.part_number, "C12345-100")
-        self.assertEqual(without_model.designators_in("ProjectA"), ["U2"])
+        without_part_number = next(r for r in database.records if r.designators_in("ProjectA") == ["U2"])
+        self.assertEqual(without_part_number.part_number, "")
+        self.assertEqual(without_part_number.model, "")
+        self.assertEqual(without_part_number.target_name("ProjectA", "U2"), "[U2]")
 
         result = match_folder_in_project("[U2]", "ProjectA", database.records)
         self.assertIsNotNone(result)
         record, _, _, designator = result  # type: ignore[misc]
-        self.assertEqual(record.part_number, "C12345-100")
+        self.assertEqual(record.part_number, "")
         self.assertEqual(record.model, "")
         self.assertEqual(designator, "U2")
 
@@ -267,15 +268,36 @@ class CasconSyncTests(unittest.TestCase):
         sheet = workbook.active
         sheet.append(["序号", "料号", "型号", "ProjectA"])
         sheet.append(["1", "C12345-400", "STM32F103", "U1"])
-        sheet.append(["2", "", "", "U2"])
+        sheet.append(["2", "C12345-401", "", "U2"])
         xlsx = self.temp_dir / "no_model_inherit.xlsx"
         workbook.save(xlsx)
 
         database = load_database(xlsx)
         empty_model_rows = [r for r in database.records if r.designators_in("ProjectA") == ["U2"]]
         self.assertEqual(len(empty_model_rows), 1)
+        self.assertEqual(empty_model_rows[0].part_number, "C12345-401")
         self.assertEqual(empty_model_rows[0].model, "")
-        self.assertEqual(empty_model_rows[0].target_name("ProjectA", "U2"), "[C12345-400 U2]")
+        self.assertEqual(empty_model_rows[0].target_name("ProjectA", "U2"), "[C12345-401 U2]")
+
+    def test_skip_empty_project_designator_but_keep_other_projects(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA", "ProjectB"])
+        sheet.append(["1", "C12345-600", "STM32F103", "U1", ""])
+        sheet.append(["2", "C12345-601", "GD32F303", "", "U9"])
+        xlsx = self.temp_dir / "skip_empty_project.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        self.assertEqual(len(database.records), 2)
+
+        record_a = next(r for r in database.records if r.part_number == "C12345-600")
+        self.assertEqual(record_a.designators_in("ProjectA"), ["U1"])
+        self.assertEqual(record_a.designators_in("ProjectB"), [])
+
+        record_b = next(r for r in database.records if r.part_number == "C12345-601")
+        self.assertEqual(record_b.designators_in("ProjectA"), [])
+        self.assertEqual(record_b.designators_in("ProjectB"), ["U9"])
 
     def test_match_bracket_with_suffix(self) -> None:
         workbook = Workbook()
@@ -308,11 +330,6 @@ class CasconSyncTests(unittest.TestCase):
         record, match_type, _, _ = result  # type: ignore[misc]
         self.assertEqual(match_type, "designator_exact")
 
-    def test_resolve_inherited_value(self) -> None:
-        self.assertEqual(resolve_inherited_value("C001", ""), ("C001", "C001"))
-        self.assertEqual(resolve_inherited_value("", "C001"), ("C001", "C001"))
-        self.assertEqual(resolve_inherited_value("", ""), ("", ""))
-
     def test_merged_part_number_cells(self) -> None:
         workbook = Workbook()
         sheet = workbook.active
@@ -334,6 +351,29 @@ class CasconSyncTests(unittest.TestCase):
         for folder in ("[U1]", "[U2]", "[U3]", "[STM32F103 U3]"):
             result = match_folder_in_project(folder, "ProjectA", database.records)
             self.assertIsNotNone(result, folder)
+
+    def test_merged_part_number_only_model_stays_empty(self) -> None:
+        """常见写法：仅合并料号，后续行只填位号；型号未合并则保持为空。"""
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "料号", "型号", "ProjectA"])
+        sheet.append(["1", "C12345-201", "STM32F103", "U1"])
+        sheet.append(["2", None, None, "U2"])
+        sheet.merge_cells("B2:B3")
+        xlsx = self.temp_dir / "merged_part_only.xlsx"
+        workbook.save(xlsx)
+
+        database = load_database(xlsx)
+        self.assertEqual(len(database.records), 2)
+
+        with_model = next(r for r in database.records if r.model == "STM32F103")
+        self.assertEqual(with_model.part_number, "C12345-201")
+        self.assertEqual(with_model.designators_in("ProjectA"), ["U1"])
+
+        empty_model = next(r for r in database.records if r.designators_in("ProjectA") == ["U2"])
+        self.assertEqual(empty_model.part_number, "C12345-201")
+        self.assertEqual(empty_model.model, "")
+        self.assertEqual(empty_model.target_name("ProjectA", "U2"), "[C12345-201 U2]")
 
     def test_merged_header_project_column(self) -> None:
         workbook = Workbook()
