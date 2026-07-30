@@ -122,15 +122,16 @@ pip install pyinstaller
 python scripts/build_exe.py
 ```
 
-或：
+生成 **单个文件** `dist/CasconSync.exe`。
 
-```bash
-pyinstaller --noconfirm --clean CasconSync.spec
-```
+打包成功后可以：
+1. **只保留这个 exe**，复制到任意文件夹（桌面、U 盘、公盘等）
+2. **直接双击运行**，无需 Python，也无需再带源码目录
+3. 在界面里手动选择 `database.xlsx`、源目录、输出目录后开始同步
 
-生成 `dist/CasconSync.exe`。双击即可弹出操作界面，无需安装 Python。
-
-注意：请在项目目录下打包；入口为 `run_gui.py`（不要直接打包 `cascon_sync/gui.py`，否则相对导入会报错）。
+注意：
+- 入口为 `run_gui.py`（不要直接打包 `cascon_sync/gui.py`）
+- `database.xlsx` 与业务文件夹是运行时选择的输入，不会打进 exe；换电脑使用时仍要能访问这些路径
 
 ### 命令行
 

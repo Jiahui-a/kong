@@ -65,8 +65,10 @@ def main() -> int:
     completed = subprocess.run(cmd, cwd=ROOT, check=False)
     if completed.returncode == 0:
         suffix = ".exe" if sys.platform.startswith("win") else ""
-        print(f"打包完成: {ROOT / 'dist' / (DIST_NAME + suffix)}")
-        print("请勿把 PyInstaller 回写后的绝对路径 .spec 提交到仓库。")
+        exe_path = ROOT / "dist" / (DIST_NAME + suffix)
+        print(f"打包完成: {exe_path}")
+        print("可将该 exe 单独复制到任意文件夹，双击即可运行，无需保留源码。")
+        print("运行后在界面中选择 database.xlsx、源目录和输出目录。")
     return completed.returncode
 
 
