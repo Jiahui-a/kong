@@ -7,7 +7,9 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from cascon_sync.database import load_database, parse_designators
+from cascon_sync.cli import format_report
+from cascon_sync.database import ChipRecord, load_database, parse_designators
+from cascon_sync.gui import validate_sync_inputs
 from cascon_sync.matcher import (
     discover_project_dirs,
     match_all_sources,
@@ -15,7 +17,7 @@ from cascon_sync.matcher import (
     match_project_folders,
     parse_chip_folder_name,
 )
-from cascon_sync.sync import sync_projects
+from cascon_sync.sync import SyncAction, SyncReport, sync_projects
 
 
 def _create_database_xlsx(path: Path) -> None:
@@ -182,8 +184,6 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(designator, "U10")
 
     def test_target_name_omits_empty_model_and_designator(self) -> None:
-        from cascon_sync.database import ChipRecord
-
         record = ChipRecord(
             part_number="C12345-011",
             model="W25Q128",
@@ -409,6 +409,43 @@ class CasconSyncTests(unittest.TestCase):
         dest = output / "[C12345-010 U10]"
         self.assertTrue(dest.is_dir())
         self.assertTrue((dest / "[C12345-010 U10].txt").is_file())
+
+    def test_validate_sync_inputs(self) -> None:
+        xlsx = self.temp_dir / "database.xlsx"
+        _create_database_xlsx(xlsx)
+        source = self.temp_dir / "cascon"
+        source.mkdir()
+        output = self.temp_dir / "out"
+
+        self.assertEqual(validate_sync_inputs(xlsx, [source], output), [])
+        self.assertTrue(any("database" in msg for msg in validate_sync_inputs("", [source], output)))
+        self.assertTrue(any("源目录" in msg for msg in validate_sync_inputs(xlsx, [], output)))
+        self.assertTrue(any("输出" in msg for msg in validate_sync_inputs(xlsx, [source], "")))
+        missing = self.temp_dir / "missing.xlsx"
+        self.assertTrue(any("找不到 database" in msg for msg in validate_sync_inputs(missing, [source], output)))
+
+    def test_format_report_contains_summary(self) -> None:
+        report = SyncReport(
+            actions=[
+                SyncAction(
+                    source=self.temp_dir / "[U1]",
+                    destination=self.temp_dir / "out" / "[U1]",
+                    project_name="ProjectA",
+                    record=ChipRecord(
+                        part_number="C1",
+                        model="M1",
+                        designators_by_project={"ProjectA": ["U1"]},
+                        row_index=2,
+                    ),
+                    match_type="designator_exact",
+                    matched_designator="U1",
+                )
+            ]
+        )
+        text = format_report(report)
+        self.assertIn("Cascon 芯片测试文件夹同步报告", text)
+        self.assertIn("统计:", text)
+        self.assertIn("复制 1 个", text)
 
 
 if __name__ == "__main__":

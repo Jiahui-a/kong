@@ -99,6 +99,39 @@ python scripts/create_template.py
 
 ## 使用方法
 
+### 图形界面（推荐）
+
+```bash
+# 无参数启动，弹出操作窗口
+python -m cascon_sync
+```
+
+界面上可手动选择：
+- **database.xlsx**（文件）
+- **Cascon 源目录**（可添加多个工作区或项目文件夹）
+- **公盘输出目录**
+- 可选 JSON 报告路径、预览模式、覆盖选项
+
+### 打包 Windows exe
+
+在 **Windows** 电脑上执行：
+
+```bash
+pip install -r requirements.txt
+pip install pyinstaller
+python scripts/build_exe.py
+```
+
+或：
+
+```bash
+pyinstaller CasconSync.spec
+```
+
+生成 `dist/CasconSync.exe`。双击即可弹出操作界面，无需安装 Python。
+
+### 命令行
+
 ```bash
 # 预览（推荐先执行）
 python -m cascon_sync \
@@ -114,6 +147,7 @@ python -m cascon_sync \
   -o "Z:\database"
 ```
 
+有命令行参数时走 CLI；无参数时启动图形界面。
 ## 重命名示例
 
 **本地（不变）：**
@@ -139,7 +173,13 @@ cascon-database-sync/
 ├── cascon_sync/
 │   ├── database.py     # 读取 database.xlsx（第2列料号、第3列型号、项目列位号）
 │   ├── matcher.py      # 项目上下文下的文件夹匹配规则
-│   └── sync.py         # 复制到公盘并重命名
+│   ├── sync.py         # 复制到公盘并重命名
+│   ├── cli.py          # 命令行入口
+│   └── gui.py          # 图形操作界面（可选打包为 exe）
+├── scripts/
+│   ├── create_template.py
+│   └── build_exe.py    # 打包 CasconSync.exe
+├── CasconSync.spec
 ├── templates/
 ├── tests/
 └── README.md
