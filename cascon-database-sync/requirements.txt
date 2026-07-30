@@ -1,2 +1,5 @@
 openpyxl>=3.1.0
 PyYAML>=6.0
+
+# 可选：打包 Windows exe
+# pyinstaller>=6.0

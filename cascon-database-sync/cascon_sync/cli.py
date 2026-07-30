@@ -93,49 +93,57 @@ def _apply_config(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def _print_report(report) -> None:
-    print("=" * 60)
-    print("Cascon 芯片测试文件夹同步报告")
-    print("=" * 60)
+def format_report(report) -> str:
+    """将同步报告格式化为可读文本。"""
+    lines: list[str] = [
+        "=" * 60,
+        "Cascon 芯片测试文件夹同步报告",
+        "=" * 60,
+    ]
 
     if report.warnings:
-        print("提示:")
+        lines.append("提示:")
         for warning in report.warnings:
-            print(f"  * {warning}")
-        print("-" * 60)
+            lines.append(f"  * {warning}")
+        lines.append("-" * 60)
 
     for action in report.actions:
-        status = "跳过" if action.skipped else "预览" if action.skipped is False and not action.destination.exists() else "完成"
         if action.skipped:
-            print(f"[跳过] [{action.project_name}] {action.source.name} -> {action.destination.name}")
-            print(f"       原因: {action.skip_reason}")
+            lines.append(f"[跳过] [{action.project_name}] {action.source.name} -> {action.destination.name}")
+            lines.append(f"       原因: {action.skip_reason}")
         else:
-            print(f"[{status}] [{action.project_name}] {action.source.name} ({action.match_type})")
-            print(f"       -> {action.destination}")
+            status = "预览" if not action.destination.exists() else "完成"
+            lines.append(f"[{status}] [{action.project_name}] {action.source.name} ({action.match_type})")
+            lines.append(f"       -> {action.destination}")
             if action.renamed_internals:
-                print("       公盘内部同名项重命名:")
+                lines.append("       公盘内部同名项重命名:")
                 for old_path, new_path in action.renamed_internals:
-                    print(f"         {old_path.name} -> {new_path.name}")
+                    lines.append(f"         {old_path.name} -> {new_path.name}")
 
     if report.unmatched_folders:
-        print("-" * 60)
-        print("未匹配的芯片测试文件夹:")
+        lines.append("-" * 60)
+        lines.append("未匹配的芯片测试文件夹:")
         for folder in report.unmatched_folders:
-            print(f"  - {folder}")
+            lines.append(f"  - {folder}")
 
     if report.errors:
-        print("-" * 60)
-        print("错误:")
+        lines.append("-" * 60)
+        lines.append("错误:")
         for error in report.errors:
-            print(f"  ! {error}")
+            lines.append(f"  ! {error}")
 
-    print("-" * 60)
-    print(
+    lines.append("-" * 60)
+    lines.append(
         f"统计: 复制 {report.copied_count} 个, "
         f"跳过 {report.skipped_count} 个, "
         f"未匹配 {len(report.unmatched_folders)} 个, "
         f"错误 {len(report.errors)} 个"
     )
+    return "\n".join(lines)
+
+
+def _print_report(report) -> None:
+    print(format_report(report))
 
 
 def _write_json_report(report, path: Path) -> None:

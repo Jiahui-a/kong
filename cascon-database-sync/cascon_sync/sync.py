@@ -141,12 +141,30 @@ def sync_projects(
     seen_targets: dict[str, Path] = {}
 
     for folder_match in matched:
-        target_key = folder_match.target_name
+        try:
+            target_key = folder_match.target_name
+        except ValueError as exc:
+            report.errors.append(f"同步失败 {folder_match.folder_path}: {exc}")
+            continue
+
         if target_key in seen_targets:
-            report.errors.append(
-                f"重复目标名称 {target_key}: "
-                f"{seen_targets[target_key]} 与 {folder_match.folder_path}"
+            # 公盘命名为 [料号_型号] 后，多项目/多位号可能指向同一目标；保留首次，其余跳过。
+            previous = seen_targets[target_key]
+            action = SyncAction(
+                source=folder_match.folder_path,
+                destination=dest_root / target_key,
+                project_name=folder_match.project_name,
+                record=folder_match.record,
+                match_type=folder_match.match_type,
+                matched_designator=folder_match.matched_designator,
+                skipped=True,
+                skip_reason=(
+                    f"目标 {target_key} 已由 {previous} 同步，"
+                    f"跳过重复源 {folder_match.folder_path}"
+                ),
             )
+            report.actions.append(action)
+            report.warnings.append(action.skip_reason)
             continue
 
         try:
