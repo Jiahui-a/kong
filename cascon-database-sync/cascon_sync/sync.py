@@ -141,7 +141,12 @@ def sync_projects(
     seen_targets: dict[str, Path] = {}
 
     for folder_match in matched:
-        target_key = folder_match.target_name
+        try:
+            target_key = folder_match.target_name
+        except ValueError as exc:
+            report.errors.append(f"同步失败 {folder_match.folder_path}: {exc}")
+            continue
+
         if target_key in seen_targets:
             report.errors.append(
                 f"重复目标名称 {target_key}: "

@@ -49,7 +49,7 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(database.records[0].model, "STM32F103C8T6")
         self.assertEqual(database.records[0].designators_in("ProjectA"), ["U1"])
         self.assertEqual(database.records[0].designators_in("ProjectB"), ["U5"])
-        self.assertEqual(database.records[0].target_name("ProjectA", "U1"), "[STM32F103C8T6 C12345-001 U1]")
+        self.assertEqual(database.records[0].target_name("ProjectA", "U1"), "[C12345-001_STM32F103C8T6]")
 
     def test_parse_bracket_name(self) -> None:
         self.assertEqual(parse_chip_folder_name("[U1]"), "U1")
@@ -114,10 +114,10 @@ class CasconSyncTests(unittest.TestCase):
         report = sync_projects([workspace], database, output)
 
         self.assertEqual(report.copied_count, 1)
-        dest = output / "[STM32F103C8T6 C12345-001 U1]"
+        dest = output / "[C12345-001_STM32F103C8T6]"
         self.assertTrue(dest.is_dir())
-        self.assertTrue((dest / "[STM32F103C8T6 C12345-001 U1]").is_dir())
-        self.assertTrue((dest / "[STM32F103C8T6 C12345-001 U1].txt").is_file())
+        self.assertTrue((dest / "[C12345-001_STM32F103C8T6]").is_dir())
+        self.assertTrue((dest / "[C12345-001_STM32F103C8T6].txt").is_file())
         self.assertTrue((dest / "readme.txt").is_file())
 
     def test_unmatched_folder_reported(self) -> None:
@@ -174,7 +174,7 @@ class CasconSyncTests(unittest.TestCase):
         record = database.records[0]
         self.assertEqual(record.model, "")
         self.assertEqual(record.part_number, "C12345-010")
-        self.assertEqual(record.target_name("ProjectA", "U10"), "[C12345-010 U10]")
+        self.assertEqual(record.target_name("ProjectA", "U10"), "[C12345-010]")
 
         result = match_folder_in_project("[U10]", "ProjectA", database.records)
         self.assertIsNotNone(result)
@@ -183,14 +183,16 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(match_type, "designator_exact")
         self.assertEqual(designator, "U10")
 
-    def test_target_name_omits_empty_model_and_designator(self) -> None:
+    def test_target_name_part_number_model_without_designator(self) -> None:
         record = ChipRecord(
             part_number="C12345-011",
             model="W25Q128",
             designators_by_project={},
             row_index=2,
         )
-        self.assertEqual(record.target_name("ProjectA"), "[W25Q128 C12345-011]")
+        self.assertEqual(record.target_name("ProjectA"), "[C12345-011_W25Q128]")
+        # 位号参数不影响公盘命名
+        self.assertEqual(record.target_name("ProjectA", "U99"), "[C12345-011_W25Q128]")
 
         record_no_model = ChipRecord(
             part_number="C12345-010",
@@ -198,7 +200,15 @@ class CasconSyncTests(unittest.TestCase):
             designators_by_project={"ProjectA": ["U10"]},
             row_index=3,
         )
-        self.assertEqual(record_no_model.target_name("ProjectA", "U10"), "[C12345-010 U10]")
+        self.assertEqual(record_no_model.target_name("ProjectA", "U10"), "[C12345-010]")
+
+        record_no_part = ChipRecord(
+            part_number="",
+            model="STM32F103",
+            designators_by_project={"ProjectA": ["U1"]},
+            row_index=4,
+        )
+        self.assertEqual(record_no_part.target_name("ProjectA", "U1"), "[STM32F103]")
 
     def test_skip_row_when_all_project_columns_empty(self) -> None:
         workbook = Workbook()
@@ -254,7 +264,8 @@ class CasconSyncTests(unittest.TestCase):
         without_part_number = next(r for r in database.records if r.designators_in("ProjectA") == ["U2"])
         self.assertEqual(without_part_number.part_number, "")
         self.assertEqual(without_part_number.model, "")
-        self.assertEqual(without_part_number.target_name("ProjectA", "U2"), "[U2]")
+        with self.assertRaises(ValueError):
+            without_part_number.target_name("ProjectA", "U2")
 
         result = match_folder_in_project("[U2]", "ProjectA", database.records)
         self.assertIsNotNone(result)
@@ -277,7 +288,7 @@ class CasconSyncTests(unittest.TestCase):
         self.assertEqual(len(empty_model_rows), 1)
         self.assertEqual(empty_model_rows[0].part_number, "C12345-401")
         self.assertEqual(empty_model_rows[0].model, "")
-        self.assertEqual(empty_model_rows[0].target_name("ProjectA", "U2"), "[C12345-401 U2]")
+        self.assertEqual(empty_model_rows[0].target_name("ProjectA", "U2"), "[C12345-401]")
 
     def test_skip_empty_project_designator_but_keep_other_projects(self) -> None:
         workbook = Workbook()
@@ -373,7 +384,7 @@ class CasconSyncTests(unittest.TestCase):
         empty_model = next(r for r in database.records if r.designators_in("ProjectA") == ["U2"])
         self.assertEqual(empty_model.part_number, "C12345-201")
         self.assertEqual(empty_model.model, "")
-        self.assertEqual(empty_model.target_name("ProjectA", "U2"), "[C12345-201 U2]")
+        self.assertEqual(empty_model.target_name("ProjectA", "U2"), "[C12345-201]")
 
     def test_merged_header_project_column(self) -> None:
         workbook = Workbook()
@@ -406,9 +417,9 @@ class CasconSyncTests(unittest.TestCase):
         report = sync_projects([workspace], database, output)
 
         self.assertEqual(report.copied_count, 1)
-        dest = output / "[C12345-010 U10]"
+        dest = output / "[C12345-010]"
         self.assertTrue(dest.is_dir())
-        self.assertTrue((dest / "[C12345-010 U10].txt").is_file())
+        self.assertTrue((dest / "[C12345-010].txt").is_file())
 
     def test_validate_sync_inputs(self) -> None:
         xlsx = self.temp_dir / "database.xlsx"
